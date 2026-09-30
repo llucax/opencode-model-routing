@@ -1,0 +1,18 @@
+#!/bin/sh
+# Runs the model-route CLI with bun. It resolves its own location, so it can be
+# called through symlinks from anywhere.
+set -eu
+
+self=$(readlink -f "$0")
+root=$(dirname "$(dirname "$self")")
+
+if command -v bun >/dev/null 2>&1; then
+    bun=$(command -v bun)
+elif [ -x "${HOME:-}/.bun/bin/bun" ]; then
+    bun="$HOME/.bun/bin/bun"
+else
+    echo "model-route: bun not found in PATH or in \$HOME/.bun/bin" >&2
+    exit 1
+fi
+
+exec "$bun" "$root/src/cli.ts" "$@"

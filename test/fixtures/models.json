@@ -1,0 +1,148 @@
+{
+  "anthropic": {
+    "models": {
+      "acme-big": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      },
+      "acme-small": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      }
+    }
+  },
+  "openai": {
+    "models": {
+      "zed-pro": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      },
+      "zed-lite": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "medium"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      }
+    }
+  },
+  "github-copilot": {
+    "models": {
+      "acme-big.1": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "low",
+              "high"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      },
+      "zed-pro": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "high",
+              "xhigh"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      },
+      "zed-lite": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "medium"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf"
+          ]
+        }
+      },
+      "vista-1": {
+        "reasoning_options": [
+          {
+            "type": "effort",
+            "values": [
+              "medium"
+            ]
+          }
+        ],
+        "modalities": {
+          "input": [
+            "text",
+            "pdf",
+            "image"
+          ]
+        }
+      }
+    }
+  }
+}

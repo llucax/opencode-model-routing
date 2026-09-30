@@ -1,0 +1,19 @@
+{
+  "name": "opencode-model-routing",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "model-route": "bin/model-route"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "5.9.2"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.33"
+  }
+}

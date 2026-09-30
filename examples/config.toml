@@ -1,0 +1,135 @@
+# Example configuration for model routing: the model_route tool and the
+# model-route command read it. It holds everything written by hand; the
+# measurements are in the data file it points at.
+#
+# The configuration is the first found, whole and never merged, of:
+#
+#   1. the file given with --config (command line only)
+#   2. the file in $MODEL_ROUTING_CONFIG, if it is not empty
+#   3. ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/model-routing/config.toml
+#
+# Copy this file there and edit it: keep only the providers you have, point
+# `data` at your data, and set the thresholds and jobs for its scale. Anything
+# not recognized is an error; `model-route check` validates the file, its
+# data and the agents that recommend jobs or ranges.
+#
+# The data this example points at, models.csv, has invented values on an
+# invented scale (scores 0 to 1000): they are not measurements, and their
+# order means nothing. Replace it with your own.
+
+# The data file: `~/...` from your home directory, anything else relative to
+# this file.
+data = "models.csv"
+
+# The data columns routing reads; any other column is ignored. Each must
+# hold a number in every row.
+[columns]
+use = ["intelligence", "cost_per_task", "tokens_per_task", "time_per_task"]
+# Filtered by score ranges (a job's or `score`), compared with heavy_score.
+score = "intelligence"
+# Compared with cheap_cost and bounded_above_cost, and ranked by.
+cost = "cost_per_task"
+
+[policy]
+# Providers in order of preference. A provider keeps its place while its spare
+# (quota left minus time left in its windows, in points) is at least
+# prefer_min_spare; below that, providers rank by spare, compared in steps of
+# spare_step points so that small differences don't decide.
+prefer = ["anthropic", "openai", "github-copilot"]
+prefer_min_spare = -10
+spare_step = 10
+# A route costing at most cheap_cost, with every requested tag and a spare of
+# at least prefer_min_spare, ranks ahead of every preferred provider.
+cheap_cost = 0.60
+# A route scoring at least heavy_score is heavy: only the provider's
+# max_heavy heavy sessions should run at once.
+heavy_score = 780
+
+# Only the providers listed here are used, by their OpenCode provider ID. A
+# data model is offered at each of them whose catalog has its ID, compared
+# lowercase with `.` and `-` equal.
+#
+# plan: free text, shown in the output.
+# max_heavy: how many heavy sessions may run at once, counting every busy
+#   session on a heavy route (yours included) and long-running workers.
+# quota_name: the provider's name in the quota data, when it differs.
+# bounded_only: models for bounded work only (one job, never a loop).
+# bounded_above_cost: any route costing more is bounded work only too.
+# window_overrides: complete the quota windows the quota data reports, with a
+#   length when it has none and the models a window is limited to; a window
+#   the quota data doesn't report does nothing.
+[providers.anthropic]
+plan = "Claude Max 5x"
+max_heavy = 2
+window_overrides = [{ name = "Claude Fable Weekly", length = "weekly", models = ["claude-fable-5-1"] }]
+
+[providers.openai]
+plan = "ChatGPT Plus"
+max_heavy = 1
+bounded_above_cost = 0.60
+
+[providers.github-copilot]
+plan = "Copilot Business seat"
+max_heavy = 1
+quota_name = "copilot"
+bounded_only = ["claude-fable-5-1", "claude-opus-5-5", "gpt-6-astra"]
+window_overrides = [{ name = "Copilot Premium Interactions", length = "monthly" }]
+
+# Tags describe what a model is good at. Requests prefer models with the tags
+# they ask for, without requiring them.
+[tags]
+orch = "orchestrating multi-repo work"
+design = "exploring options through discussion"
+review = "reviewing code or plans"
+impl = "implementation"
+fast = "low latency"
+
+# Jobs are what agents ask for: a score range (`A-B`, or `A+` for at least A),
+# optional tags, and one line saying when to use it. The tool lists them in its
+# description, so adding, renaming or removing one needs an OpenCode restart.
+[jobs.triage]
+score = "500-640"
+tags = ["fast"]
+about = "triage, mechanical or fixed-rule work, micro-fixes"
+
+[jobs.implement]
+score = "600-720"
+tags = ["impl"]
+about = "well specified implementation or docs, bounded research"
+
+[jobs.hard]
+score = "780-880"
+tags = ["design", "review"]
+about = "hard or ambiguous work, design, reviewing another model's output"
+
+# Optional, per model (by its ID in the data): its tags, and in `ids` its
+# exact ID at a provider, which wins over matching. It's needed only when a
+# provider's ID differs from the data's by more than case, `.` and `-`, or when
+# two IDs at one provider match the same data model.
+[[model]]
+id = "claude-opus-5-5"
+tags = ["orch", "design", "review", "impl"]
+
+[[model]]
+id = "claude-sonnet-5-5"
+tags = ["impl", "review"]
+
+[[model]]
+id = "gpt-6-sol"
+tags = ["design", "review", "impl"]
+
+[[model]]
+id = "gpt-6-luna"
+tags = ["impl", "fast"]
+
+[[model]]
+id = "grok-4-7"
+tags = ["impl"]
+ids = { github-copilot = "grok-4.7" }
+
+# Routes never offered, whatever the request; without an effort, every
+# effort of the model. Meant for extreme cases.
+[[exclude]]
+model = "gpt-6-sol"
+effort = "max"
+reason = "far too slow in practice"

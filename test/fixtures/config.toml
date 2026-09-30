@@ -1,0 +1,67 @@
+# Synthetic configuration for the invented values in models.csv.
+data = "models.csv"
+
+[columns]
+use = ["score", "cost"]
+score = "score"
+cost = "cost"
+
+[policy]
+prefer = ["anthropic", "openai", "github-copilot"]
+prefer_min_spare = -10
+spare_step = 10
+cheap_cost = 0.15
+heavy_score = 55
+
+[providers.anthropic]
+max_heavy = 2
+window_overrides = [
+  { name = "Acme Big Weekly", length = "weekly", models = ["Acme Big"] },
+]
+
+[providers.openai]
+max_heavy = 1
+
+[providers.github-copilot]
+max_heavy = 1
+quota_name = "copilot"
+bounded_only = ["Acme Big"]
+window_overrides = [{ name = "Premium", length = "monthly" }]
+
+[tags]
+plan = "planning and design."
+code = "writing code from a clear spec."
+review = "judging other output."
+docs = "documentation."
+fast = "fast output."
+vision = "images."
+
+[jobs.implement]
+score = "40-47"
+tags = ["code"]
+about = "Implement a defined task"
+
+[[model]]
+id = "Acme Big"
+tags = ["plan", "code", "review"]
+ids = { anthropic = "acme-big", github-copilot = "acme-big.1" }
+
+[[model]]
+id = "Acme Small"
+tags = ["code", "docs"]
+ids = { anthropic = "acme-small" }
+
+[[model]]
+id = "Zed Pro"
+tags = ["review", "code"]
+ids = { openai = "zed-pro", github-copilot = "zed-pro" }
+
+[[model]]
+id = "Zed Lite"
+tags = ["code", "fast"]
+ids = { openai = "zed-lite", github-copilot = "zed-lite" }
+
+[[model]]
+id = "Vista"
+tags = ["vision", "docs"]
+ids = { github-copilot = "vista-1" }

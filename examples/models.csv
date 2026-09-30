@@ -1,0 +1,14 @@
+model,vendor,effort,date,intelligence,cost_per_task,tokens_per_task,time_per_task,coding_index
+gpt-6-sol,openai,max,2030-01-15,910,31.00,210000,2600,720
+gpt-6-sol,openai,high,2030-01-15,860,12.00,90000,900,700
+gpt-6-luna,openai,xhigh,2030-01-15,790,0.80,160000,1900,810
+gpt-6-luna,openai,medium,2030-01-15,610,0.30,40000,350,640
+claude-sonnet-5-5,anthropic,high,2030-01-15,880,7.50,60000,800,590
+claude-sonnet-5-5,anthropic,low,2030-01-15,540,1.15,12000,155,660
+claude-fable-5-1,anthropic,high,2030-01-15,700,5.00,50000,700,880
+claude-opus-5-5,anthropic,xhigh,2030-01-15,820,22.00,140000,1700,760
+claude-opus-5-5,anthropic,medium,2030-01-15,650,3.40,30000,380,900
+gpt-6-astra,openai,low,2030-01-15,570,0.45,20000,210,830
+kimi-k3,moonshot,high,2030-01-15,840,2.20,70000,950,610
+grok-4-7,xai,medium,2030-01-15,760,1.60,45000,500,690
+gemini-3-8-flash,google,medium,2030-01-15,520,0.35,15000,115,570

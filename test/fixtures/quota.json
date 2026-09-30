@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "exportedAt": 947505600,
+  "fromCache": true,
+  "cacheAgeSeconds": 10,
+  "providers": {
+    "anthropic": {
+      "status": "ok",
+      "fetchedAt": 947505600,
+      "entries": [
+        {
+          "name": "Acme 5h",
+          "resultType": "quota",
+          "acquisitionMethod": "remote_api",
+          "ownership": "maintained",
+          "authority": "provider_reported",
+          "window": "5h",
+          "resetAt": 947512800,
+          "renderType": "percent",
+          "percentRemaining": 77
+        },
+        {
+          "name": "Acme Weekly",
+          "resultType": "quota",
+          "acquisitionMethod": "remote_api",
+          "ownership": "maintained",
+          "authority": "provider_reported",
+          "window": "Weekly",
+          "resetAt": 947808000,
+          "renderType": "percent",
+          "percentRemaining": 90
+        },
+        {
+          "name": "Acme Big Weekly",
+          "resultType": "quota",
+          "acquisitionMethod": "remote_api",
+          "ownership": "maintained",
+          "authority": "provider_reported",
+          "resetAt": 947808000,
+          "renderType": "percent",
+          "percentRemaining": 100
+        }
+      ]
+    },
+    "copilot": {
+      "status": "ok",
+      "fetchedAt": 947505600,
+      "entries": [
+        {
+          "name": "Premium",
+          "resultType": "quota",
+          "acquisitionMethod": "remote_api",
+          "ownership": "maintained",
+          "authority": "provider_reported",
+          "resetAt": 949363200,
+          "renderType": "percent",
+          "percentRemaining": 30
+        }
+      ]
+    },
+    "openai": {
+      "status": "unavailable"
+    },
+    "openrouter": {
+      "status": "unavailable"
+    }
+  }
+}
