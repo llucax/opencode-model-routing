@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { checkAgainstData, parseConfig, type Routing } from "../src/config.ts";
 import { parseData } from "../src/data.ts";
@@ -42,10 +43,9 @@ export function editedConfig(from: string, to: string): string {
   return fixtureConfigText.replace(from, to);
 }
 
+/** A new temporary directory, as a path. */
 export function tempDir(): string {
-  const base = "/home/luca/contai-shared/tmp/opencode-ses-tests-model-routing";
-  mkdirSync(base, { recursive: true });
-  return mkdtempSync(join(base, "case-"));
+  return mkdtempSync(join(tmpdir(), "model-route-test-"));
 }
 
 export function writeFiles(dir: string, files: Record<string, string>): string {

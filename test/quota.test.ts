@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { computeQuota, findQuotaCli, loadQuota, monthlyLength, pinnedQuotaVersion, readQuotaJson, spareFor, unknownQuota } from "../src/quota.ts";
 import { fixtureData, tempDir, writeFiles } from "./helpers.ts";
@@ -106,6 +106,15 @@ function windowFor(models: string[]) {
 }
 
 describe("quota input", () => {
+  // The pinned version is read from $XDG_CONFIG_HOME when it is set, as on
+  // GitHub's runners; these tests read it from their own home directory.
+  const xdg = process.env.XDG_CONFIG_HOME;
+  beforeAll(() => {
+    delete process.env.XDG_CONFIG_HOME;
+  });
+  afterAll(() => {
+    if (xdg !== undefined) process.env.XDG_CONFIG_HOME = xdg;
+  });
   test("reads a saved file asynchronously, warns for missing and malformed files", async () => {
     const dir = writeFiles(tempDir(), { "quota.json": JSON.stringify(json({ openai: { entries: [entry("W", 50, now + DAY, "weekly")] } })), "bad.json": "{" });
     expect((await loadQuota(config, NOW, join(dir, "quota.json"))).providers.openai!.windows).toHaveLength(1);
