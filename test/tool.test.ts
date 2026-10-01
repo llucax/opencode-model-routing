@@ -51,6 +51,17 @@ describe("heavy running sessions", () => {
     const none = routingOf(fixtureText, editedConfig('heavy = "score >= 55"\n', ""));
     expect(countHeavy([session("anthropic", "acme-big", "high"), session("anthropic", "acme-big")], none, fixtureCatalog).running.anthropic).toBe(0);
   });
+  test("a provider's own heavy decides for its sessions, the policy's for the others", () => {
+    const own = routingOf(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1.5"'));
+    const result = countHeavy([
+      session("openai", "zed-pro", "high"), session("openai", "zed-pro", "xhigh"), session("openai", "zed-lite", "medium"),
+      session("anthropic", "acme-big", "low"), session("anthropic", "acme-big", "high"),
+    ], own, fixtureCatalog);
+    // Score 47 at cost 1.5 and 50 at cost 2 are heavy at OpenAI; Acme Big high is heavy at Anthropic by score.
+    expect(result.running).toEqual({ anthropic: 1, openai: 2, "github-copilot": 0 });
+    // Without OpenAI's own predicate, score >= 55 makes neither Zed Pro effort heavy.
+    expect(countHeavy([session("openai", "zed-pro", "high"), session("openai", "zed-pro", "xhigh")], routing, fixtureCatalog).running.openai).toBe(0);
+  });
   test("running sessions without a model add a note, but not to a provider's count", () => {
     const result = countHeavy([{ id: "first", directory: "/work" }, { id: "second", directory: "/other" }], routing, fixtureCatalog);
     expect(result.running).toEqual({ anthropic: 0, openai: 0, "github-copilot": 0 });
@@ -102,6 +113,16 @@ describe("tool execution with fake dependencies", () => {
     expect(result.routes).toHaveLength(2);
     expect(result.title).toBe("anthropic/acme-big high");
     expect(result.output).not.toContain("more routes; pass limit");
+  });
+  test("a limit above 1 returns each provider's best route and says what it hid; limit 1 and 0 don't", async () => {
+    const result = await runTool({ job: "implement", limit: 3 }, deps());
+    expect(result.routes.map((r) => r.provider).sort()).toEqual(["anthropic", "github-copilot", "openai"]);
+    expect(result.output).toContain("3 more routes, 3 of them other routes of the same providers; pass limit 0 to see them.");
+    const two = await runTool({ job: "implement", limit: 2 }, deps());
+    expect(two.routes).toHaveLength(2);
+    expect(two.output).toContain("4 more routes, 3 of them other routes of the same providers; pass a larger limit, or 0 for every route.");
+    expect((await runTool({ job: "implement", limit: 0 }, deps())).routes).toHaveLength(6);
+    expect((await runTool({ job: "implement", limit: 1 }, deps())).output).toContain("5 more routes; pass limit to see them.");
   });
   test("running heavy sessions at their limits remove the provider's heavy route", async () => {
     const running = [session("anthropic", "acme-big", "high"), session("anthropic", "acme-big", "high")];

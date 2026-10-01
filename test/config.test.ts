@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigError, EXAMPLE_DIR, buildRouting, checkAgainstData, describeSource, loadConfig, loadRouting, locateConfig, parseConfig, readConfigText, resolvePath } from "../src/config.ts";
+import { ConfigError, EXAMPLE_DIR, buildRouting, checkAgainstData, describeSource, heavyOf, loadConfig, loadRouting, locateConfig, parseConfig, readConfigText, resolvePath } from "../src/config.ts";
 import { DataError } from "../src/data.ts";
 import { compile } from "../src/expr.ts";
 import { usedColumns } from "../src/formulas.ts";
@@ -139,6 +139,21 @@ describe("formulas and predicates", () => {
     const config = parse(editedConfig('cheap = "cost <= 0.15"\nheavy = "score >= 55"\n', ""));
     expect(config.policy.cheap).toBeUndefined();
     expect(config.policy.heavy).toBeUndefined();
+  });
+  test("a provider takes an optional heavy predicate, checked like the policy's", () => {
+    const own = '[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1"';
+    const config = parse(editedConfig("[providers.openai]\nmax_heavy = 1", own));
+    expect(config.providers.openai?.heavy?.text).toBe("cost >= 1");
+    expect(config.providers.anthropic?.heavy).toBeUndefined();
+    expect(heavyOf(config, "openai")?.text).toBe("cost >= 1");
+    expect(heavyOf(config, "anthropic")?.text).toBe("score >= 55");
+    expect(heavyOf(parse(editedConfig('heavy = "score >= 55"\n', "")), "anthropic")).toBeUndefined();
+    expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "x"'))).toContain(
+      "config.toml: providers.openai.heavy: column 1: a predicate must be a comparison or a combination of them, this is a number",
+    );
+    expect(() => routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "pric >= 1"'))).toThrow(
+      'config.toml: providers.openai.heavy: column 1: unknown name "pric", neither a data column nor a formula',
+    );
   });
   test("jobs take an optional value formula and where predicate", () => {
     const text = editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "value - price"\nwhere = "quality < 50"');

@@ -3,7 +3,7 @@
 
 import { tool, type PluginInput, type ToolDefinition } from "@opencode-ai/plugin";
 import { CatalogError, defaultModelsJsonPath, loadModelsJson, matchModels, type Catalog } from "./catalog.ts";
-import { loadConfig, loadRouting, locateConfig, type Config, type Routing } from "./config.ts";
+import { heavyOf, loadConfig, loadRouting, locateConfig, type Config, type Routing } from "./config.ts";
 import { dataModels, isEffort, normalizeId } from "./data.ts";
 import { formatBrief, NO_WORKAROUND } from "./format.ts";
 import { truthAt } from "./formulas.ts";
@@ -24,8 +24,8 @@ export interface ToolArgs {
 
 /**
  * How many heavy sessions run per provider. A session counts when its model
- * is a data model at a configured provider and the policy's `heavy` holds
- * for its row at the session's effort; with no variant, or an effort the
+ * is a data model at a configured provider and the provider's `heavy` (else
+ * the policy's) holds for its row at the session's effort; with no variant, or an effort the
  * data lacks, it counts when it holds for any row of the model.
  */
 export function countHeavy(
@@ -61,7 +61,7 @@ export function countHeavy(
     const rows = data.rows.filter((row) => normalizeId(row.model) === key);
     const exact = variant !== undefined && isEffort(variant) ? rows.find((row) => row.effort === variant) : undefined;
     if (!exact) guessed++;
-    if ((exact ? [exact] : rows).some((row) => truthAt(results, row, config.policy.heavy))) running[providerID]!++;
+    if ((exact ? [exact] : rows).some((row) => truthAt(results, row, heavyOf(config, providerID)))) running[providerID]!++;
   }
   const notes: string[] = [];
   if (withoutModel > 0) notes.push(`${withoutModel} running session${withoutModel === 1 ? " has" : "s have"} no model yet and ${withoutModel === 1 ? "was" : "were"} not counted.`);

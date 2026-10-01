@@ -43,6 +43,26 @@ describe("route CLI", () => {
     const limited = run([...fixed, "--limit", "2"]);
     expect(limited.stdout).toContain("any request: 13 routes, showing 2");
   });
+  test("a limit above 1 prints each provider's best route, --every-route and --limit 0 print every route", () => {
+    const providers = (stdout: string) => stdout.split("\n").flatMap((line) => /^(anthropic|openai|github-copilot)\//.exec(line)?.[1] ?? []);
+    const best = run([...fixed, "--score", "40-47", "--limit", "3"]);
+    expect(best.status).toBe(0);
+    expect(providers(best.stdout)).toEqual(["anthropic", "github-copilot", "openai"]);
+    expect(best.stdout).toContain("score 40-47: 6 routes, showing 3; 3 other routes of the same providers hidden, --every-route shows them");
+    const every = run([...fixed, "--score", "40-47", "--limit", "3", "--every-route"]);
+    expect(providers(every.stdout)).toEqual(["anthropic", "anthropic", "github-copilot"]);
+    expect(every.stdout).toContain("score 40-47: 6 routes, showing 3;");
+    expect(every.stdout).not.toContain("hidden");
+    expect(providers(run([...fixed, "--score", "40-47", "--limit", "0"]).stdout)).toHaveLength(6);
+    expect(providers(run([...fixed, "--score", "40-47"]).stdout)).toHaveLength(1);
+    expect(providers(run([...fixed, "--score", "40-47", "--every-route"]).stdout)).toHaveLength(1);
+    const json = JSON.parse(run([...fixed, "--score", "40-47", "--limit", "3", "--json"]).stdout);
+    expect(json).toMatchObject({ found: { routes: 6, sameProvider: 3 }, request: { everyRoute: false } });
+    expect(json.routes).toHaveLength(3);
+    expect(JSON.parse(run([...fixed, "--score", "40-47", "--limit", "3", "--every-route", "--json"]).stdout)).toMatchObject({
+      found: { routes: 6, sameProvider: 0 }, request: { everyRoute: true },
+    });
+  });
   test("--json contains version, found before cut, columns, job and limit", () => {
     const result = run([...fixed, "--job", "implement", "--limit", "2", "--json"]);
     expect(result.status).toBe(0);
@@ -302,7 +322,7 @@ describe("check CLI", () => {
   });
   test("check rejects every routing-only option and stray positionals", () => {
     for (const option of [["--score", "40+"], ["--json"], ["--tags", "code"], ["--now", "2000-01-01"],
-      ["--job", "implement"], ["--limit", "2"], ["--need", "vision"], ["--not-model", "ghost"],
+      ["--job", "implement"], ["--limit", "2"], ["--every-route"], ["--need", "vision"], ["--not-model", "ghost"],
       ["--quota-json", quota]]) {
       const result = run(["check", "--config", fixtureConfig, ...option]);
       expect(result.status).toBe(1);

@@ -43,6 +43,8 @@ export interface Request {
   notModels: string[];
   /** How many routes to return, 0 for all. */
   limit: number;
+  /** Keep every route of a provider even when `limit` is above 1, instead of only its best. */
+  everyRoute: boolean;
   /** The formula routes rank by: the job's, else `formulas.value`. */
   value: Expr;
   /** The filter routes must pass, if any: the job's. */
@@ -58,6 +60,8 @@ export interface RequestInput {
   needs?: string[];
   notModels?: string[];
   limit?: number;
+  /** Don't keep only each provider's best route when `limit` is above 1. */
+  everyRoute?: boolean;
   /** Replaces the job's value formula, or `formulas.value`. */
   value?: Expr;
   /** Replaces the job's filter. */
@@ -120,6 +124,7 @@ export function buildRequest(input: RequestInput, config: Config, defaultLimit: 
     needs: [...new Set(needs)],
     notModels: input.notModels ?? [],
     limit,
+    everyRoute: input.everyRoute ?? false,
     value,
     ...(where ? { where } : {}),
   };

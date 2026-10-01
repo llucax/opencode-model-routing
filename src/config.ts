@@ -29,6 +29,8 @@ export interface Provider {
   boundedOnly: string[];
   /** Routes of this provider it holds for are for bounded work only. */
   bounded?: Expr;
+  /** Routes of this provider it holds for are heavy, instead of the policy's `heavy`. */
+  heavy?: Expr;
   /** How many heavy sessions may run at once on this provider. */
   maxHeavy: number;
   windowOverrides: QuotaWindow[];
@@ -231,11 +233,12 @@ export function parseConfig(text: string, label: string, file: string, home = ho
   const providers: Record<string, Provider> = {};
   for (const [name, table] of Object.entries(providerTables)) {
     const where = `providers.${name}`;
-    keys(table, ["plan", "quota_name", "bounded_only", "bounded", "max_heavy", "window_overrides"], REMOVED_KEYS.provider!, where);
+    keys(table, ["plan", "quota_name", "bounded_only", "bounded", "heavy", "max_heavy", "window_overrides"], REMOVED_KEYS.provider!, where);
     const plan = table.plan === undefined ? undefined : v.nonEmptyString(table, "plan", where);
     const quotaName = v.string(table, "quota_name", where, false);
     const boundedOnly = v.strings(table, "bounded_only", where, false) ?? [];
     const bounded = expression(table, "bounded", where, "truth");
+    const heavy = expression(table, "heavy", where, "truth");
     const maxHeavy = v.number(table, "max_heavy", where, "positive");
     if (maxHeavy !== undefined && !Number.isInteger(maxHeavy)) {
       v.error(path(where, "max_heavy"), `must be an integer, got ${maxHeavy}`);
@@ -260,6 +263,7 @@ export function parseConfig(text: string, label: string, file: string, home = ho
       ...(quotaName !== undefined ? { quotaName } : {}),
       boundedOnly,
       ...(bounded !== undefined ? { bounded } : {}),
+      ...(heavy !== undefined ? { heavy } : {}),
       maxHeavy: maxHeavy ?? 1,
       windowOverrides: windows,
     };
@@ -359,6 +363,11 @@ export function parseConfig(text: string, label: string, file: string, home = ho
     models,
     exclude,
   };
+}
+
+/** The predicate that decides whether a route at `provider` is heavy: the provider's own, else the policy's; absent, none is. */
+export function heavyOf(config: Config, provider: string): Expr | undefined {
+  return config.providers[provider]?.heavy ?? config.policy.heavy;
 }
 
 /** A message for each cycle among the formulas, as `formulas.a: refers to itself through b`. */

@@ -81,8 +81,25 @@ describe("route output", () => {
   test("text includes counted routes before limit, removed counts, and above-range fallback", () => {
     const { request, result } = report({ score: "40-47", limit: 1 });
     expect(formatText(result, request, quota, routing)).toContain("score 40-47: 6 routes, showing 1; removed 3 below range, 4 above range");
-    const above = report({ score: "33-33", limit: 2 });
+    const above = report({ score: "33-33", limit: 2, everyRoute: true });
     expect(formatText(above.result, above.request, quota, routing)).toContain("none in range, 12 routes, showing 2 above range");
+  });
+  test("a shortlist of each provider's best route says what it hid, in text, brief and JSON", () => {
+    const best = report({ score: "40-47", limit: 2 });
+    expect(formatText(best.result, best.request, quota, routing)).toContain(
+      "score 40-47: 6 routes, showing 2; 3 other routes of the same providers hidden, --every-route shows them; removed",
+    );
+    const above = report({ score: "33-33", limit: 2 });
+    expect(formatText(above.result, above.request, quota, routing)).toContain(
+      "none in range, 12 routes, showing 2 above range; 9 other routes of the same providers hidden, --every-route shows them",
+    );
+    const brief = formatBrief(best.result, best.request, quota, routing, []);
+    expect(brief).toContain("4 more routes, 3 of them other routes of the same providers; pass a larger limit, or 0 for every route.");
+    const all = report({ score: "40-47", limit: 3 });
+    expect(formatBrief(all.result, all.request, quota, routing, [])).toContain("3 more routes, 3 of them other routes of the same providers; pass limit 0 to see them.");
+    const json = jsonReport(best.result, best.request, quota, routing, []);
+    expect(json).toMatchObject({ found: { routes: 6, sameProvider: 3 }, request: { limit: 2, everyRoute: false } });
+    expect(jsonReport(report({ limit: 2, everyRoute: true }).result, report({ limit: 2, everyRoute: true }).request, quota, routing, [])).toMatchObject({ request: { everyRoute: true } });
   });
   test("no route prints nearest; brief prints the required response instruction", () => {
     const { request, result } = report({ score: "100+" });
@@ -138,7 +155,7 @@ describe("route output", () => {
     expect(json).toMatchObject({ version: 3, snapshot: "2000-01-01", columns: { include: [] },
       formulas: { score: "quality", cost: "price", value: "-cost" }, shown: { columns: ["quality", "price"], score: false, cost: false },
       request: { job: "implement", min: 40, max: 47, tags: ["code"], limit: 1, score: "quality", value: "-cost", where: null },
-      found: { routes: 6, aboveRange: 0 }, warnings: ["warning"] });
+      found: { routes: 6, aboveRange: 0, sameProvider: 0 }, warnings: ["warning"] });
     expect((json.routes as Record<string, unknown>[])[0]).toMatchObject({ spare: null, value: -1, shown: { quality: 45, price: 1 } });
     expect((json.quota as Record<string, unknown>[])[0]!.maxHeavy).toBe(2);
   });
@@ -183,5 +200,9 @@ describe("route output", () => {
     const job = routingOf(fixtureText, editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "quality"\nwhere = "price < 2"'));
     expect(formatConfig(sources, job)).toContain("  implement  40-47 code: Implement a defined task\n             value quality\n             where price < 2\n");
     expect(jsonConfig(sources, job)).toMatchObject({ jobs: [{ name: "implement", value: "quality", where: "price < 2" }] });
+    expect(jsonConfig(sources, routing)).toMatchObject({ providers: [{ heavy: null }, { heavy: null }, { heavy: null }] });
+    const own = routingOf(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1"'));
+    expect(formatConfig(sources, own)).toContain("openai\n  max_heavy  1\n  heavy      cost >= 1\n");
+    expect(jsonConfig(sources, own)).toMatchObject({ providers: [{ heavy: null }, { name: "openai", heavy: "cost >= 1" }, { heavy: null }] });
   });
 });

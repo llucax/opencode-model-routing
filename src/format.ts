@@ -170,6 +170,11 @@ function countText(shown: number, found: number, noun: string): string {
   return shown < found ? `${text}, showing ${shown}` : text;
 }
 
+/** What the shortlist of each provider's best route left out, or empty. */
+function sameProviderText(count: number): string {
+  return count === 0 ? "" : `; ${count} other route${count === 1 ? "" : "s"} of the same providers hidden, --every-route shows them`;
+}
+
 /** The whole text output, without warnings. */
 export function formatText(result: RouteResult, request: Request, quota: Quota, routing: Routing): string {
   const { config, data } = routing;
@@ -181,12 +186,12 @@ export function formatText(result: RouteResult, request: Request, quota: Quota, 
   const excludedText = describeExcluded(result);
   if (result.routes.length > 0) {
     lines.push(...formatRoutes(result.routes, shown), "");
-    lines.push(`${description}: ${countText(result.routes.length, result.found.routes, "route")}${removedText}`);
+    lines.push(`${description}: ${countText(result.routes.length, result.found.routes, "route")}${sameProviderText(result.found.sameProvider)}${removedText}`);
     if (excludedText) lines.push(excludedText);
   } else if (result.aboveRange.length > 0) {
     lines.push(...formatRoutes(result.aboveRange, shown), "");
     const above = countText(result.aboveRange.length, result.found.aboveRange, "route");
-    lines.push(`${description}: none in range, ${above} above range${removedText}`);
+    lines.push(`${description}: none in range, ${above} above range${sameProviderText(result.found.sameProvider)}${removedText}`);
     if (excludedText) lines.push(excludedText);
   } else {
     lines.push(`No route matches ${description}`);
@@ -247,7 +252,13 @@ export function formatBrief(result: RouteResult, request: Request, quota: Quota,
     lines.push(...routes.map((route) => briefRoute(route, shown, compact)));
     lines.push(`quota: ${quotaSummary(quota, config)}`);
     const found = result.routes.length > 0 ? result.found.routes : result.found.aboveRange;
-    if (routes.length < found) lines.push(`${found - routes.length} more routes; pass limit to see them.`);
+    const more = found - routes.length;
+    const same = result.found.sameProvider;
+    if (more > 0 && same === 0) lines.push(`${more} more routes; pass limit to see them.`);
+    else if (more > 0) {
+      const how = more > same ? "pass a larger limit, or 0 for every route" : "pass limit 0 to see them";
+      lines.push(`${more} more routes, ${same} of them other routes of the same providers; ${how}.`);
+    }
     if (routes.some((route) => route.heavy)) lines.push("Long-running workers count as heavy too.");
     if (routes.some((route) => route.bounded)) lines.push("Bounded work only: one bounded job, never a loop or long session.");
   } else {
@@ -302,6 +313,7 @@ export function jsonReport(
       needs: request.needs,
       notModels: request.notModels,
       limit: request.limit,
+      everyRoute: request.everyRoute,
       score: config.formulas.score!.text,
       value: request.value.text,
       where: exprText(request.where),
@@ -352,6 +364,7 @@ function providerLines(provider: Provider): string[] {
   if (provider.quotaName !== undefined) pairs.push(["quota_name", [provider.quotaName]]);
   if (provider.boundedOnly.length > 0) pairs.push(["bounded_only", [provider.boundedOnly.join(", ")]]);
   if (provider.bounded !== undefined) pairs.push(["bounded", [provider.bounded.text]]);
+  if (provider.heavy !== undefined) pairs.push(["heavy", [provider.heavy.text]]);
   if (provider.windowOverrides.length > 0) pairs.push(["window_overrides", provider.windowOverrides.map(describeWindow)]);
   return [provider.plan === undefined ? provider.name : `${provider.name} (${provider.plan})`, ...keyValueLines(pairs)];
 }
@@ -427,6 +440,7 @@ export function jsonConfig(sources: ConfigSources, routing: Routing): Record<str
       maxHeavy: provider.maxHeavy,
       boundedOnly: provider.boundedOnly,
       bounded: exprText(provider.bounded),
+      heavy: exprText(provider.heavy),
       windowOverrides: provider.windowOverrides.map((window) => ({ ...window, models: window.models ?? null })),
     })),
     jobs: Object.values(config.jobs).map((job) => ({
