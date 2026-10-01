@@ -79,6 +79,7 @@ heavy = "score >= 780"
 # quota_name: the provider's name in the quota data, when it differs.
 # bounded_only: models for bounded work only (one job, never a loop).
 # bounded: a predicate; the routes it holds for are bounded work only too.
+# heavy: a predicate replacing policy.heavy for this provider's routes.
 # window_overrides: complete the quota windows the quota data reports, with a
 #   length when it has none and the models a window is limited to; a window
 #   the quota data doesn't report does nothing.
@@ -91,6 +92,7 @@ window_overrides = [{ name = "Claude Fable Weekly", length = "weekly", models = 
 plan = "ChatGPT Plus"
 max_heavy = 1
 bounded = "cost > 0.60"
+heavy = "cost >= 1"
 
 [providers.github-copilot]
 plan = "Copilot Business seat"

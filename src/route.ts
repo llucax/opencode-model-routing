@@ -3,7 +3,7 @@
 // ranked routes. Pure and deterministic: everything comes in as an argument.
 
 import { CatalogError, matchModels, offersEffort, type Catalog, type Match } from "./catalog.ts";
-import type { Exclusion, Routing } from "./config.ts";
+import { heavyOf, type Exclusion, type Routing } from "./config.ts";
 import { dataModels, normalizeId, type Effort } from "./data.ts";
 import { numberAt, truthAt } from "./formulas.ts";
 import { spareFor, type Quota } from "./quota.ts";
@@ -30,7 +30,7 @@ export interface Route {
   /** The policy's `cheap` holds; it ranks ahead only with enough spare and every requested tag. */
   cheap: boolean;
   bounded: boolean;
-  /** The policy's `heavy` holds. */
+  /** The provider's `heavy`, or else the policy's, holds. */
   heavy: boolean;
   /** How many heavy sessions may run at once on the provider. */
   maxHeavy: number;
@@ -268,7 +268,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
         modelTags,
         cheap: truthAt(results, row, config.policy.cheap),
         bounded,
-        heavy: truthAt(results, row, config.policy.heavy),
+        heavy: truthAt(results, row, heavyOf(config, provider)),
         maxHeavy: settings.maxHeavy,
         ...(running === undefined ? {} : { running: running[provider] ?? 0 }),
         ...(spare === undefined ? {} : { spare }),

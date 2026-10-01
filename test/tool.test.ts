@@ -51,6 +51,17 @@ describe("heavy running sessions", () => {
     const none = routingOf(fixtureText, editedConfig('heavy = "score >= 55"\n', ""));
     expect(countHeavy([session("anthropic", "acme-big", "high"), session("anthropic", "acme-big")], none, fixtureCatalog).running.anthropic).toBe(0);
   });
+  test("a provider's own heavy decides for its sessions, the policy's for the others", () => {
+    const own = routingOf(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1.5"'));
+    const result = countHeavy([
+      session("openai", "zed-pro", "high"), session("openai", "zed-pro", "xhigh"), session("openai", "zed-lite", "medium"),
+      session("anthropic", "acme-big", "low"), session("anthropic", "acme-big", "high"),
+    ], own, fixtureCatalog);
+    // Score 47 at cost 1.5 and 50 at cost 2 are heavy at OpenAI; Acme Big high is heavy at Anthropic by score.
+    expect(result.running).toEqual({ anthropic: 1, openai: 2, "github-copilot": 0 });
+    // Without OpenAI's own predicate, score >= 55 makes neither Zed Pro effort heavy.
+    expect(countHeavy([session("openai", "zed-pro", "high"), session("openai", "zed-pro", "xhigh")], routing, fixtureCatalog).running.openai).toBe(0);
+  });
   test("running sessions without a model add a note, but not to a provider's count", () => {
     const result = countHeavy([{ id: "first", directory: "/work" }, { id: "second", directory: "/other" }], routing, fixtureCatalog);
     expect(result.running).toEqual({ anthropic: 0, openai: 0, "github-copilot": 0 });

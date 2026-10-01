@@ -58,7 +58,7 @@ Start from [`examples/config.toml`](examples/config.toml), whose comments explai
 | `[columns]`     | Optional: `include`, data columns to show even when no formula uses them.                                                                                                                 |
 | `[formulas]`    | Named formulas: `score` (what ranges filter), `cost` and `value` (what ranks routes) are required, others are free. See [Formulas and predicates](#formulas-and-predicates).              |
 | `[policy]`      | `prefer`, `prefer_min_spare`, `spare_step`, and the optional predicates `cheap` and `heavy`, explained in [How routes are ranked](#how-routes-are-ranked).                                |
-| `[providers.*]` | One per OpenCode provider you have: `plan`, `max_heavy`, `quota_name`, `bounded_only`, `bounded` (a predicate) and `window_overrides`. Only these providers are used.                     |
+| `[providers.*]` | One per OpenCode provider you have: `plan`, `max_heavy`, `quota_name`, `bounded_only`, `bounded` and `heavy` (predicates) and `window_overrides`. Only these providers are used.          |
 | `[tags]`        | Tag names and what each means. Requests prefer models with the tags they ask for.                                                                                                         |
 | `[jobs.*]`      | What agents ask for: a `score` range (`A-B`, or `A+` for at least A), optional `tags`, an `about` line, and optionally a `value` formula to rank by and a `where` predicate to filter by. |
 | `[[model]]`     | Optional, per data model: `id`, its `tags`, and `ids`, its exact ID at a provider when matching doesn't find it.                                                                          |
@@ -103,6 +103,7 @@ A formula gives a number and a predicate gives a truth value. Every place in the
 | `jobs.*.value`, `--value` | formula   | The job's or the request's ranking, instead of `formulas.value`.               |
 | `policy.cheap`            | predicate | Cheap routes rank ahead of the preferred providers. Absent, no route is cheap. |
 | `policy.heavy`            | predicate | Heavy routes count against `max_heavy`. Absent, no route is heavy.             |
+| `providers.*.heavy`       | predicate | The provider's own `heavy`, instead of the policy's, for its routes.           |
 | `providers.*.bounded`     | predicate | The provider's routes it holds for are for bounded work only.                  |
 | `jobs.*.where`, `--where` | predicate | Only routes it holds for are offered.                                          |
 
@@ -254,7 +255,7 @@ Spare is the percent of a quota window remaining minus the percent of the window
 The notes on a route don't change its rank:
 
 - `bounded work only`: the model is in the provider's `bounded_only`, or the provider's `bounded` holds for the route. One bounded job, never a loop or a long session.
-- `heavy`: `policy.heavy` holds for the route. The command shows the provider's `max_heavy`; the tool shows how many heavy sessions run there, counting a running session when `heavy` holds for its model at its effort, or for any effort of the model when its effort isn't in the data.
+- `heavy`: the provider's `heavy` holds for the route, or `policy.heavy` when the provider has none, since a provider's own predicate replaces the policy's: a score that is heavy at one provider can cost little at another, so cost based thresholds usually differ. The command shows the provider's `max_heavy`; the tool shows how many heavy sessions run there, counting a running session when its provider's `heavy` holds for its model at its effort, or for any effort of the model when its effort isn't in the data.
 - `missing tags: ...`, and `above range` when nothing was in range.
 
 ## Development

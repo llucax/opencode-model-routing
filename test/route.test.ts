@@ -355,6 +355,24 @@ describe("routing detail", () => {
     expect(routes.find((r) => r.provider === "openai" && r.cost === 1.5)!.bounded).toBe(false);
     expect(routes.find((r) => r.provider === "openai" && r.cost === 2)!.notes).toContain("bounded work only");
   });
+  test("a provider's heavy replaces the policy's for its routes only, and works without a policy one", () => {
+    const own = `[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1.5"`;
+    const selected = routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", own));
+    const heavy = routeFixture({}, { routing: selected }).routes.filter((r) => r.heavy).map((r) => `${r.provider} ${r.score}/${r.cost}`);
+    // OpenAI's Zed Pro rows (cost 1.5 and 2) are heavy by cost; the others keep score >= 55.
+    expect([...heavy].sort()).toEqual(["anthropic 60/5", "github-copilot 60/5", "openai 47/1.5", "openai 50/2"]);
+    // The policy's predicate no longer applies to OpenAI, whatever the score.
+    const light = routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", `[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 100"`));
+    expect(routeFixture({}, { routing: light }).routes.filter((r) => r.provider === "openai" && r.heavy)).toEqual([]);
+    const alone = routing(fixtureText, editedConfig('heavy = "score >= 55"\n', "").replace("[providers.openai]\nmax_heavy = 1", own));
+    expect(routeFixture({}, { routing: alone }).routes.filter((r) => r.heavy).map((r) => r.provider)).toEqual(["openai", "openai"]);
+  });
+  test("a provider at its heavy limit drops only the routes its own heavy holds for", () => {
+    const selected = routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", `[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 2"`));
+    const result = routeFixture({}, { routing: selected, running: { anthropic: 0, openai: 1, "github-copilot": 0 } });
+    expect(result.removed.heavyLimit).toBe(1);
+    expect(result.routes.filter((r) => r.provider === "openai").map((r) => r.cost).sort((a, b) => a - b)).toEqual([0.1, 1.5]);
+  });
   test("heavy threshold is inclusive and changes only notes, not ranking", () => {
     const base = routeFixture().routes;
     expect(base.filter((r) => r.heavy).map((r) => r.score)).toEqual([60, 60]);

@@ -352,6 +352,7 @@ function providerLines(provider: Provider): string[] {
   if (provider.quotaName !== undefined) pairs.push(["quota_name", [provider.quotaName]]);
   if (provider.boundedOnly.length > 0) pairs.push(["bounded_only", [provider.boundedOnly.join(", ")]]);
   if (provider.bounded !== undefined) pairs.push(["bounded", [provider.bounded.text]]);
+  if (provider.heavy !== undefined) pairs.push(["heavy", [provider.heavy.text]]);
   if (provider.windowOverrides.length > 0) pairs.push(["window_overrides", provider.windowOverrides.map(describeWindow)]);
   return [provider.plan === undefined ? provider.name : `${provider.name} (${provider.plan})`, ...keyValueLines(pairs)];
 }
@@ -427,6 +428,7 @@ export function jsonConfig(sources: ConfigSources, routing: Routing): Record<str
       maxHeavy: provider.maxHeavy,
       boundedOnly: provider.boundedOnly,
       bounded: exprText(provider.bounded),
+      heavy: exprText(provider.heavy),
       windowOverrides: provider.windowOverrides.map((window) => ({ ...window, models: window.models ?? null })),
     })),
     jobs: Object.values(config.jobs).map((job) => ({

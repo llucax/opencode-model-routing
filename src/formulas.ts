@@ -21,6 +21,7 @@ export function configExpressions(config: Config): Located[] {
   if (config.policy.heavy) found.push({ key: "policy.heavy", expr: config.policy.heavy });
   for (const provider of Object.values(config.providers)) {
     if (provider.bounded) found.push({ key: `providers.${provider.name}.bounded`, expr: provider.bounded });
+    if (provider.heavy) found.push({ key: `providers.${provider.name}.heavy`, expr: provider.heavy });
   }
   for (const job of Object.values(config.jobs)) {
     if (job.value) found.push({ key: `jobs.${job.name}.value`, expr: job.value });

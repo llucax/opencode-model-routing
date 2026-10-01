@@ -183,5 +183,9 @@ describe("route output", () => {
     const job = routingOf(fixtureText, editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "quality"\nwhere = "price < 2"'));
     expect(formatConfig(sources, job)).toContain("  implement  40-47 code: Implement a defined task\n             value quality\n             where price < 2\n");
     expect(jsonConfig(sources, job)).toMatchObject({ jobs: [{ name: "implement", value: "quality", where: "price < 2" }] });
+    expect(jsonConfig(sources, routing)).toMatchObject({ providers: [{ heavy: null }, { heavy: null }, { heavy: null }] });
+    const own = routingOf(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nheavy = "cost >= 1"'));
+    expect(formatConfig(sources, own)).toContain("openai\n  max_heavy  1\n  heavy      cost >= 1\n");
+    expect(jsonConfig(sources, own)).toMatchObject({ providers: [{ heavy: null }, { name: "openai", heavy: "cost >= 1" }, { heavy: null }] });
   });
 });
