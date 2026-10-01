@@ -47,6 +47,23 @@ export function editedConfig(from: string, to: string): string {
   return fixtureConfigText.replace(from, to);
 }
 
+/**
+ * The fixture configuration with a reference of every kind to a model or
+ * effort the data lacks, each next to the real one so routing stays the same.
+ */
+export const staleConfigText = editedConfig('bounded_only = ["Acme Big"]', 'bounded_only = ["Acme Big", "Ghost"]')
+  .replace('models = ["Acme Big"]', 'models = ["Acme Big", "Phantom"]')
+  + '\n[[exclude]]\nmodel = "Zed Pro"\neffort = "none"\nreason = "x"\n[[exclude]]\nmodel = "Nobody"\nreason = "x"\n[[model]]\nid = "Missing"\n';
+
+/** The warnings `staleConfigText` gives, prefixed with `label`. */
+export const staleWarnings = (label: string): string[] => [
+  `${label}: model[5].id: model "Missing" is not in the data`,
+  `${label}: exclude[0].effort: "none" is not an effort of model "Zed Pro" in the data`,
+  `${label}: exclude[1].model: model "Nobody" is not in the data`,
+  `${label}: providers.anthropic.window_overrides[0].models[1]: model "Phantom" is not in the data`,
+  `${label}: providers.github-copilot.bounded_only[1]: model "Ghost" is not in the data`,
+];
+
 /** A new temporary directory, as a path. */
 export function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "model-route-test-"));

@@ -396,7 +396,9 @@ function formulaCycles(formulas: Record<string, Expr>): string[] {
 
 /**
  * The configuration's model references that the data doesn't have: `[[model]]`,
- * `exclude` (and its effort), `bounded_only` and `window_overrides`.
+ * `exclude` (and its effort), `bounded_only` and `window_overrides`. They are
+ * warnings, not errors: routing ignores them, so a data refresh that drops a
+ * model or an effort can't break it.
  */
 export function checkAgainstData(config: Config, data: Data, label: string): string[] {
   const known = dataModels(data);
@@ -485,24 +487,26 @@ export interface Routing {
   config: Config;
   data: Data;
   results: Results;
+  /** Model references the data lacks, which routing ignores; see `checkAgainstData`. */
+  stale: string[];
 }
 
 /**
  * Validates the configuration against the data's text and evaluates its
  * formulas and predicates, and `extra`, for every row. Problems with names
  * come first, against the header alone; then the data, with every used
- * column; then the model references and the values. `label` prefixes the
- * configuration's messages, `dataLabel` the data's.
+ * column; then the values. Model references the data lacks are not
+ * errors but `stale`. `label` prefixes the configuration's messages,
+ * `dataLabel` the data's.
  */
 export function buildRouting(config: Config, dataText: string, label: string, dataLabel: string, extra: readonly Located[] = []): Routing {
   const names = checkColumns(config, parseHeader(dataText, dataLabel), label, extra);
   if (names.length > 0) throw new ConfigError(names);
   const data = parseData(dataText, dataLabel, usedColumns(config, extra));
-  const problems = checkAgainstData(config, data, label);
+  const stale = checkAgainstData(config, data, label);
+  const { results, problems } = evaluateRows(config, data, dataLabel, extra);
   if (problems.length > 0) throw new ConfigError(problems);
-  const { results, problems: values } = evaluateRows(config, data, dataLabel, extra);
-  if (values.length > 0) throw new ConfigError(values);
-  return { config, data, results };
+  return { config, data, results, stale };
 }
 
 /**

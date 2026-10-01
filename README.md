@@ -64,7 +64,7 @@ Start from [`examples/config.toml`](examples/config.toml), whose comments explai
 | `[[model]]`     | Optional, per data model: `id`, its `tags`, and `ids`, its exact ID at a provider when matching doesn't find it.                                                                          |
 | `[[exclude]]`   | Routes never offered: `model`, optional `effort` (without it, every effort) and `reason`.                                                                                                 |
 
-Everything is validated strictly: a wrong type, an out of range number or an unknown key is an error, and every problem is reported at once, prefixed with the file. Model references (`[[model]]`, `exclude`, `bounded_only`, `window_overrides`) use the data's model IDs and must be in the data.
+Everything is validated strictly: a wrong type, an out of range number or an unknown key is an error, and every problem is reported at once, prefixed with the file. Model references (`[[model]]`, `exclude`, `bounded_only`, `window_overrides`) use the data's model IDs. One the data doesn't have, or an `exclude` effort the model doesn't have there, is not an error: routing ignores it, so a data refresh that drops a model can't break routing, and `model-route check` lists it as a warning until you remove it.
 
 The tool reads the configuration on every call, so changes apply at once, except for the jobs its description lists and its `job` parameter accepts, which need an OpenCode restart.
 
@@ -235,7 +235,7 @@ Exit status is 0 with routes, 2 when nothing matches (the output then shows the 
 - Configured providers the catalog doesn't have, `ids` entries it doesn't have, ambiguous matches, and data models none of the configured providers offer.
 - In `AGENTS.md`, `agents/*.md`, `skills/*/SKILL.md` and `tool-instructions/*.md` under the OpenCode configuration directory (default `~/.config/opencode`): mentions of `provider/model` at a configured provider that aren't a data model's ID there, `--score` ranges no route meets, unknown tags after them, and unknown jobs in `--job NAME`, ``job: `NAME` `` or `` `job: NAME` ``.
 
-It prints one problem per line and exits 1 if there are any, else one OK line.
+It prints one problem per line and exits 1 if there are any, else one OK line. Before them, it prints a `warning:` line for each model reference in the configuration the data doesn't have; those don't change the exit status.
 
 `model-route check --data FILE` validates a data file alone, without a configuration, catalog or quota, for a data repository's CI: its format, and a number in every row of every column but `model`, `vendor`, `effort` and `date`.
 

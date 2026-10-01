@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { cliEnv, configOnly, editedConfig, fixtureConfig, fixtureConfigText, fixtureDir, fixtureModels, fixtureText, tempDir, writeFiles } from "./helpers.ts";
+import { cliEnv, configOnly, editedConfig, fixtureConfig, fixtureConfigText, fixtureDir, fixtureModels, fixtureText, staleConfigText, staleWarnings, tempDir, writeFiles } from "./helpers.ts";
 
 const bin = join(import.meta.dir, "..", "bin", "model-route");
 const models = join(fixtureDir, "models.json");
@@ -288,12 +288,27 @@ describe("check CLI", () => {
     expect(result.stdout).toContain('unknown effort "invalid"');
     expect(result.stdout).toContain('quality "NaN" is not a finite number');
   });
-  test("invalid config reference checked against data before catalog or config directory", () => {
-    const file = privateConfig(editedConfig('bounded_only = ["Acme Big"]', 'bounded_only = ["Nobody"]'));
-    const result = run(["check", "--config", file, "--models-json", "/nonexistent/catalog.json"]);
+  test("model references absent from the data are warnings that don't fail the check", () => {
+    const file = privateConfig(staleConfigText);
+    const result = run(["check", "--config", file, "--models-json", models, "--config-dir", writeFiles(tempDir(), { "AGENTS.md": "" })]);
+    expect(result).toEqual({
+      status: 0,
+      stdout: [...staleWarnings(file).map((w) => `warning: ${w}`), "OK: 8 rows of 5 models and 1 configuration files checked", ""].join("\n"),
+      stderr: "",
+    });
+  });
+  test("stale warnings come before the problems, which still fail the check", () => {
+    const file = privateConfig(staleConfigText);
+    const result = run(["check", "--config", file, "--models-json", models, "--config-dir", writeFiles(tempDir(), { "AGENTS.md": "--job unknown" })]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`${file}: providers.github-copilot.bounded_only[0]: model "Nobody" is not in the data`);
+    expect(result.stdout.split("\n").slice(0, 6)).toEqual([...staleWarnings(file).map((w) => `warning: ${w}`), expect.stringContaining('unknown job "unknown"')]);
+  });
+  test("routing ignores stale references, and only the quota line shows a window's models as configured", () => {
+    const clean = run([...withConfig(privateConfig()), "--job", "implement", "--limit", "0"]);
+    const stale = run([...withConfig(privateConfig(staleConfigText)), "--job", "implement", "--limit", "0"]);
+    expect(stale.status).toBe(0);
+    expect(stale.stderr).toBe("");
+    expect(stale.stdout.replace("(Acme Big, Phantom only)", "(Acme Big only)")).toBe(clean.stdout);
   });
   test("invalid config syntax is reported without trying a missing data path", () => {
     const file = privateConfig(editedConfig("spare_step = 10", "spare_step = 0"));
