@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { describeRequest, formatBrief, formatConfig, formatDuration, formatNumber, formatQuota, formatRoutes, formatSpare, formatText, jsonConfig, jsonReport, NO_WORKAROUND } from "../src/format.ts";
+import { describeRequest, formatBrief, formatConfig, formatDuration, formatNumber, formatQuota, formatRoutes, formatSpare, formatText, jsonConfig, jsonReport, NO_WORKAROUND, PREVIEW_CHARS } from "../src/format.ts";
 import { unknownQuota, type WindowState } from "../src/quota.ts";
 import { buildRequest } from "../src/request.ts";
 import { route } from "../src/route.ts";
-import { fixtureCatalog, fixtureConfig, fixtureData } from "./helpers.ts";
+import { compile } from "../src/expr.ts";
+import { shownColumns } from "../src/formulas.ts";
+import { editedConfig, fixtureCatalog, fixtureConfig, fixtureData, fixtureText, routing as routingOf } from "./helpers.ts";
 
 const routing = fixtureData();
 const quota = unknownQuota(routing.config, "test");
-const report = (input: Parameters<typeof buildRequest>[0] = {}) => {
-  const request = buildRequest(input, routing.config, 0);
-  return { request, result: route(request, { routing, catalog: fixtureCatalog, quota }) };
+const report = (input: Parameters<typeof buildRequest>[0] = {}, selected = routing) => {
+  const request = buildRequest(input, selected.config, 0);
+  return { request, result: route(request, { routing: selected, catalog: fixtureCatalog, quota }) };
 };
+const shown = (input: Parameters<typeof buildRequest>[0] = {}, selected = routing) =>
+  shownColumns(buildRequest(input, selected.config, 0), selected.config, selected.data);
 
 describe("display helpers", () => {
   test("signed spare, duration and numeric precision", () => {
@@ -28,10 +32,10 @@ describe("display helpers", () => {
     expect(lines[0]).toContain("5h 0% (1h00m) -20 BLOCKED (Acme Big only)");
     expect(lines[1]).toContain("test");
   });
-  test("table uses configured numeric columns, notes and no trailing spaces", () => {
+  test("table shows the value, the columns the formulas use, notes and no trailing spaces", () => {
     const { result } = report({ tags: ["review"] });
-    const lines = formatRoutes(result.routes, routing.config.columns.use);
-    expect(lines[0]).toMatch(/^provider\/model\s+effort\s+score\s+cost\s+spare\s+tags\s+notes$/);
+    const lines = formatRoutes(result.routes, shown());
+    expect(lines[0]).toMatch(/^provider\/model\s+effort\s+value\s+quality\s+price\s+spare\s+tags\s+notes$/);
     expect(lines.some((line) => line.includes("missing tags: review"))).toBe(true);
     expect(lines.every((line) => !line.endsWith(" "))).toBe(true);
   });
@@ -39,6 +43,9 @@ describe("display helpers", () => {
     expect(describeRequest(buildRequest({ job: "implement", needs: ["vision"], notModels: ["acme-big"] }, routing.config, 0)))
       .toBe("job implement, score 40-47, tags code, need vision, not model acme-big");
     expect(describeRequest(buildRequest({}, routing.config, 0))).toBe("any request");
+    const custom = { value: compile("quality", "number"), where: compile("price < 2", "truth") };
+    expect(describeRequest(buildRequest({ score: "40+", ...custom }, routing.config, 0), routing.config)).toBe("score 40+, value quality, where price < 2");
+    expect(describeRequest(buildRequest({ score: "40+" }, routing.config, 0), routing.config)).toBe("score 40+");
   });
   test("quota shows provider plans and only configured providers", () => {
     const selected = structuredClone(routing.config);
@@ -51,10 +58,22 @@ describe("display helpers", () => {
     expect(rows.join("\n")).not.toContain("notConfigured");
   });
   test("tabular heavy notes shorten the full heavy advice", () => {
-    const rows = formatRoutes(report({ score: "60+" }).result.routes, routing.config.columns.use);
+    const rows = formatRoutes(report({ score: "60+" }).result.routes, shown());
     expect(rows.join("\n")).toContain("heavy (max 2)");
     expect(rows.join("\n")).toContain("bounded work only; heavy (max 1)");
     expect(rows.join("\n")).not.toContain("at a time");
+  });
+  test("shown columns: columns.include and those of the score, cost, value and where, in the data's order", () => {
+    const data = fixtureText.replace("quality,price", "quality,price,speed,tokens").split("\n")
+      .map((line, i) => (line === "" || i === 0 ? line : `${line},${i},${i * 100}`)).join("\n");
+    const config = editedConfig("[formulas]", '[columns]\ninclude = ["tokens"]\n\n[formulas]').replace('value = "-cost"', 'value = "-cost"\nfast = "speed"');
+    const selected = routingOf(data, config);
+    expect(shown({}, selected)).toEqual({ columns: ["quality", "price", "tokens"], score: false, cost: false });
+    expect(shown({ value: compile("fast", "number") }, selected).columns).toEqual(["quality", "price", "speed", "tokens"]);
+    expect(shown({ where: compile("speed > 1", "truth") }, selected).columns).toEqual(["quality", "price", "speed", "tokens"]);
+    const derived = routingOf(fixtureText, editedConfig('score = "quality"', 'score = "quality * 10"'));
+    expect(shown({}, derived)).toEqual({ columns: ["quality", "price"], score: true, cost: false });
+    expect(formatRoutes(report({}, derived).result.routes, shown({}, derived))[0]).toMatch(/\bvalue\s+quality\s+price\s+score\s+spare\b/);
   });
 });
 
@@ -92,20 +111,35 @@ describe("route output", () => {
   test("brief limits output and includes quota, heavy, bounded notes and used numeric values", () => {
     const { request, result } = report({ score: "60+", limit: 1 });
     const brief = formatBrief(result, request, quota, routing, []);
-    expect(brief).toMatch(/anthropic\/acme-big high \(score 60, cost 5\): heavy/);
+    expect(brief).toMatch(/anthropic\/acme-big high \(value -5, quality 60, price 5\): heavy/);
     expect(brief).toContain("1 more routes; pass limit to see them.");
     expect(brief).toContain("quota: anthropic spare ?, openai spare ?, github-copilot spare ?");
     expect(brief).toContain("Long-running workers count as heavy too.");
     const bounded = report({ score: "40-40" });
     expect(formatBrief(bounded.result, bounded.request, quota, routing, [])).toContain("Bounded work only");
   });
-  test("JSON version 2, columns, job, limit, found and null unknown spare", () => {
+  test("brief keeps the first route and every note inside the TUI's preview, compacting the metrics", () => {
+    const long = (name: string) => `${name}_${"x".repeat(60)}`;
+    const data = fixtureText.replace("quality,price", `${long("quality")},${long("price")}`);
+    const config = editedConfig('score = "quality"', `score = "${long("quality")}"`).replace('cost = "price"', `cost = "${long("price")}"`)
+      .replace('heavy = "score >= 55"', 'heavy = "score >= 50"');
+    const selected = routingOf(data, config);
+    const request = buildRequest({ score: "50+", tags: ["docs", "fast", "vision"], limit: 1 }, selected.config, 0);
+    const result = route(request, { routing: selected, catalog: fixtureCatalog, quota, running: { "github-copilot": 0 } });
+    const first = formatBrief(result, request, quota, selected, []).split("\n")[0]!;
+    expect(first).toBe("github-copilot/zed-pro xhigh (value -2): heavy, 0 of 1 running on github-copilot; missing tags: docs, fast, vision");
+    expect(first.length).toBeLessThanOrEqual(PREVIEW_CHARS);
+    const short = report({ score: "60+", limit: 1 });
+    expect(formatBrief(short.result, short.request, quota, routing, [])).toContain("(value -5, quality 60, price 5)");
+  });
+  test("JSON version 3, formulas, shown columns, job, limit, found and null unknown spare", () => {
     const { request, result } = report({ job: "implement", limit: 1 });
     const json = jsonReport(result, request, quota, routing, ["warning"]);
-    expect(json).toMatchObject({ version: 2, snapshot: "2000-01-01", columns: { use: ["score", "cost"], score: "score", cost: "cost" },
-      request: { job: "implement", min: 40, max: 47, tags: ["code"], limit: 1 },
+    expect(json).toMatchObject({ version: 3, snapshot: "2000-01-01", columns: { include: [] },
+      formulas: { score: "quality", cost: "price", value: "-cost" }, shown: { columns: ["quality", "price"], score: false, cost: false },
+      request: { job: "implement", min: 40, max: 47, tags: ["code"], limit: 1, score: "quality", value: "-cost", where: null },
       found: { routes: 6, aboveRange: 0 }, warnings: ["warning"] });
-    expect((json.routes as Record<string, unknown>[])[0]!.spare).toBeNull();
+    expect((json.routes as Record<string, unknown>[])[0]).toMatchObject({ spare: null, value: -1, shown: { quality: 45, price: 1 } });
     expect((json.quota as Record<string, unknown>[])[0]!.maxHeavy).toBe(2);
   });
   test("JSON preserves quota precision and null bounds, includes heavy flags", () => {
@@ -132,7 +166,8 @@ describe("route output", () => {
     const source = { config: { path: fixtureConfig, source: "--config" as const } };
     const json = jsonConfig(source, routing);
     expect(json).toMatchObject({ config: { source: "--config" },
-      policy: { prefer: ["anthropic", "openai", "github-copilot"], cheapCost: 0.15 },
+      formulas: { score: "quality", cost: "price", value: "-cost" },
+      policy: { prefer: ["anthropic", "openai", "github-copilot"], cheap: "cost <= 0.15", heavy: "score >= 55" },
       providers: [{ name: "anthropic", maxHeavy: 2 }, { name: "openai" }, { name: "github-copilot", quotaName: "copilot" }] });
   });
   test("config output reports data path, jobs, aliases and exclusions", () => {
@@ -141,6 +176,12 @@ describe("route output", () => {
     expect(text).toContain("data    ");
     expect(text).toContain("jobs\n");
     expect(text).toContain("github-copilot/acme-big.1");
-    expect(jsonConfig(sources, routing)).toMatchObject({ version: 2, data: { rows: 8 }, columns: { score: "score" } });
+    expect(text).toContain("formulas\n  score  quality\n  cost   price\n  value  -cost\n");
+    expect(text).toContain("  cheap             cost <= 0.15\n  heavy             score >= 55\n");
+    expect(jsonConfig(sources, routing)).toMatchObject({ version: 3, data: { rows: 8 }, columns: { include: [] },
+      jobs: [{ name: "implement", value: null, where: null }] });
+    const job = routingOf(fixtureText, editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "quality"\nwhere = "price < 2"'));
+    expect(formatConfig(sources, job)).toContain("  implement  40-47 code: Implement a defined task\n             value quality\n             where price < 2\n");
+    expect(jsonConfig(sources, job)).toMatchObject({ jobs: [{ name: "implement", value: "quality", where: "price < 2" }] });
   });
 });

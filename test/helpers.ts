@@ -1,8 +1,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { checkAgainstData, parseConfig, type Routing } from "../src/config.ts";
-import { parseData } from "../src/data.ts";
+import { buildRouting, parseConfig, type Routing } from "../src/config.ts";
+import type { Located } from "../src/formulas.ts";
 import { loadModelsJson } from "../src/catalog.ts";
 import { unknownQuota } from "../src/quota.ts";
 import { buildRequest, type RequestInput } from "../src/request.ts";
@@ -15,19 +15,23 @@ export const fixtureConfig = join(fixtureDir, "config.toml");
 export const fixtureConfigText = await Bun.file(fixtureConfig).text();
 export const fixtureCatalog = loadModelsJson(join(fixtureDir, "models.json"));
 
-/** Parse the synthetic CSV and config together, checking cross-file references. */
-export function routing(dataText = fixtureText, configText = fixtureConfigText): Routing {
-  const config = parseConfig(configText, "config.toml", fixtureConfig);
-  const data = parseData(dataText, "models.csv", config.columns.use);
-  const errors = checkAgainstData(config, data, "config.toml");
-  if (errors.length) throw new Error(errors.join("\n"));
-  return { config, data };
+/** Parse the synthetic CSV and config together, checking cross-file references and evaluating the formulas. */
+export function routing(dataText = fixtureText, configText = fixtureConfigText, extra: Located[] = []): Routing {
+  return buildRouting(parseConfig(configText, "config.toml", fixtureConfig), dataText, "config.toml", "models.csv", extra);
+}
+
+/** The request's own value and where, as the CLI passes them to loading. */
+function extraOf(input: RequestInput): Located[] {
+  return [
+    ...(input.value ? [{ key: "--value", expr: input.value }] : []),
+    ...(input.where ? [{ key: "--where", expr: input.where }] : []),
+  ];
 }
 
 export const fixtureData = routing;
 
 export function routeFixture(input: RequestInput = {}, overrides: Partial<RouteInputs> = {}) {
-  const selected = overrides.routing ?? routing();
+  const selected = overrides.routing ?? routing(fixtureText, fixtureConfigText, extraOf(input));
   return route(buildRequest(input, selected.config, 0), {
     routing: selected, catalog: fixtureCatalog, quota: unknownQuota(selected.config, "test"), ...overrides,
   });

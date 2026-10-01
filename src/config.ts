@@ -1,11 +1,14 @@
-// The configuration: everything the user writes by hand. Where the data is
-// and which of its columns to use, the providers they have and how to prefer
-// them, tags, jobs, and per-model tags, ID aliases and exclusions.
+// The configuration: everything the user writes by hand. Where the data is,
+// the formulas and predicates over its columns, the providers they have and
+// how to prefer them, tags, jobs, and per-model tags, ID aliases and
+// exclusions.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { dataModels, isEffort, loadData, normalizeId, parseWindowLength, type Data, type Effort } from "./data.ts";
+import { dataModels, FIXED_COLUMNS, isEffort, normalizeId, parseData, parseHeader, parseWindowLength, readDataText, type Data, type Effort } from "./data.ts";
+import { compile, ExprError, isName, type Expr, type ExprType } from "./expr.ts";
+import { checkColumns, evaluateRows, usedColumns, type Located, type Results } from "./formulas.ts";
 import { parseRange } from "./request.ts";
 import { parseToml, path, show, Validator, ValidationError, type Obj } from "./validate.ts";
 
@@ -24,8 +27,8 @@ export interface Provider {
   quotaName?: string;
   /** Model IDs only for bounded work at this provider. */
   boundedOnly: string[];
-  /** Routes of this provider costing more than this are for bounded work only. */
-  boundedAboveCost?: number;
+  /** Routes of this provider it holds for are for bounded work only. */
+  bounded?: Expr;
   /** How many heavy sessions may run at once on this provider. */
   maxHeavy: number;
   windowOverrides: QuotaWindow[];
@@ -35,20 +38,19 @@ export interface Policy {
   prefer: string[];
   preferMinSpare: number;
   spareStep: number;
-  /** Routes costing at most this, with enough spare, rank ahead of the preferred providers. */
-  cheapCost: number;
-  /** Routes scoring at least this are heavy. */
-  heavyScore: number;
+  /** Routes it holds for, with enough spare and every requested tag, rank ahead of the preferred providers; absent, none. */
+  cheap?: Expr;
+  /** Routes it holds for are heavy; absent, none. */
+  heavy?: Expr;
 }
 
 export interface Columns {
-  /** The data columns routing reads; each holds a number in every row. */
-  use: string[];
-  /** The column filtered by score ranges and compared with heavy_score. */
-  score: string;
-  /** The column compared with cheap_cost and bounded_above_cost, and ranked by. */
-  cost: string;
+  /** Data columns always shown, even when no formula uses them. */
+  include: string[];
 }
+
+/** The formulas every configuration has. */
+export const REQUIRED_FORMULAS = ["score", "cost", "value"] as const;
 
 export interface Job {
   name: string;
@@ -58,6 +60,10 @@ export interface Job {
   max?: number;
   tags: string[];
   about: string;
+  /** The job's value formula, instead of `formulas.value`. */
+  value?: Expr;
+  /** The job's filter. */
+  where?: Expr;
 }
 
 export interface ModelEntry {
@@ -79,6 +85,8 @@ export interface Config {
   /** Absolute path of the data file. */
   data: string;
   columns: Columns;
+  /** Named formulas, numeric: `score`, `cost` and `value` at least. */
+  formulas: Record<string, Expr>;
   policy: Policy;
   /** The providers the user has, in the file's order. */
   providers: Record<string, Provider>;
@@ -100,7 +108,23 @@ export class ConfigError extends ValidationError {
 
 const fail = (messages: string[]): Error => new ConfigError(messages);
 
-const TOP_KEYS = ["data", "columns", "policy", "providers", "tags", "jobs", "model", "exclude"];
+const TOP_KEYS = ["data", "columns", "formulas", "policy", "providers", "tags", "jobs", "model", "exclude"];
+
+/** Keys of v1 that are gone, with what replaces them. */
+const REMOVED_KEYS: Record<string, Record<string, string>> = {
+  columns: {
+    use: "formulas use the columns they refer to; list any other column to show in columns.include",
+    score: 'use formulas.score, as score = "intelligence"',
+    cost: 'use formulas.cost, as cost = "cost_per_task"',
+  },
+  policy: {
+    cheap_cost: 'use the predicate policy.cheap, as cheap = "cost <= 0.5"',
+    heavy_score: 'use the predicate policy.heavy, as heavy = "score >= 780"',
+  },
+  provider: {
+    bounded_above_cost: 'use the predicate bounded, as bounded = "cost > 0.5"',
+  },
+};
 
 /** `~/x` from the home directory, a relative path from `base`. */
 export function resolvePath(value: string, base: string, home = homedir()): string {
@@ -117,6 +141,26 @@ export function parseConfig(text: string, label: string, file: string, home = ho
   const root = parseToml(text, label, fail) as Obj;
   const v = new Validator(label);
   v.keys(root, TOP_KEYS, "");
+  /** Reports the table's unknown keys, with a hint for the removed ones. */
+  const keys = (table: Obj, allowed: string[], removed: Record<string, string>, where: string): void => {
+    for (const key of Object.keys(table)) {
+      if (key in removed) v.error(path(where, key), `no longer exists; ${removed[key]}`);
+    }
+    v.keys(Object.fromEntries(Object.entries(table).filter(([key]) => !(key in removed))), allowed, where);
+  };
+  /** The expression at `key`, compiled for `type`, or undefined after reporting a problem. */
+  const expression = (table: Obj, key: string, where: string, type: ExprType, required = false): Expr | undefined => {
+    if (table[key] === undefined && !required) return undefined;
+    const text = v.nonEmptyString(table, key, where);
+    if (text === undefined) return undefined;
+    try {
+      return compile(text, type);
+    } catch (error) {
+      if (!(error instanceof ExprError)) throw error;
+      v.error(path(where, key), `column ${error.column}: ${error.message}`);
+      return undefined;
+    }
+  };
 
   const dataPath = v.nonEmptyString(root, "data", "");
 
@@ -136,26 +180,37 @@ export function parseConfig(text: string, label: string, file: string, home = ho
     return list ?? [];
   };
 
-  const columns: Columns = { use: [], score: "", cost: "" };
-  if (root.columns === undefined) v.error("", 'missing "columns"');
-  else {
+  const columns: Columns = { include: [] };
+  if (root.columns !== undefined) {
     const table = v.table(root.columns, "columns");
     if (table) {
-      v.keys(table, ["use", "score", "cost"], "columns");
-      const use = v.strings(table, "use", "columns") ?? [];
-      if (table.use !== undefined && use.length === 0) v.error("columns.use", "must not be empty");
+      keys(table, ["include"], REMOVED_KEYS.columns!, "columns");
+      const include = v.strings(table, "include", "columns", false) ?? [];
       const seen = new Set<string>();
-      use.forEach((name, i) => {
-        if (["model", "vendor", "effort", "date"].includes(name)) v.error(`columns.use[${i}]`, `${show(name)} is not a numeric column`);
-        else if (seen.has(name)) v.error(`columns.use[${i}]`, `duplicate column ${show(name)}`);
+      include.forEach((name, i) => {
+        if ((FIXED_COLUMNS as readonly string[]).includes(name)) v.error(`columns.include[${i}]`, `${show(name)} is not a numeric column`);
+        else if (seen.has(name)) v.error(`columns.include[${i}]`, `duplicate column ${show(name)}`);
         seen.add(name);
       });
-      columns.use = use;
-      for (const role of ["score", "cost"] as const) {
-        const name = v.nonEmptyString(table, role, "columns");
-        if (name !== undefined && !use.includes(name)) v.error(`columns.${role}`, `${show(name)} is not in columns.use`);
-        columns[role] = name ?? "";
+      columns.include = include;
+    }
+  }
+
+  const formulas: Record<string, Expr> = {};
+  if (root.formulas === undefined) v.error("", 'missing "formulas"');
+  else {
+    const table = v.table(root.formulas, "formulas");
+    if (table) {
+      for (const name of REQUIRED_FORMULAS) if (!(name in table)) v.error("formulas", `missing ${show(name)}`);
+      for (const name of Object.keys(table)) {
+        if (!isName(name)) {
+          v.error(`formulas.${name}`, "a formula name is letters, digits and _, not starting with a digit, and not and, or or not");
+          continue;
+        }
+        const expr = expression(table, name, "formulas", "number", true);
+        if (expr) formulas[name] = expr;
       }
+      for (const message of formulaCycles(formulas)) v.error("", message);
     }
   }
 
@@ -176,12 +231,11 @@ export function parseConfig(text: string, label: string, file: string, home = ho
   const providers: Record<string, Provider> = {};
   for (const [name, table] of Object.entries(providerTables)) {
     const where = `providers.${name}`;
-    v.keys(table, ["plan", "quota_name", "bounded_only", "bounded_above_cost", "max_heavy", "window_overrides"], where);
+    keys(table, ["plan", "quota_name", "bounded_only", "bounded", "max_heavy", "window_overrides"], REMOVED_KEYS.provider!, where);
     const plan = table.plan === undefined ? undefined : v.nonEmptyString(table, "plan", where);
     const quotaName = v.string(table, "quota_name", where, false);
     const boundedOnly = v.strings(table, "bounded_only", where, false) ?? [];
-    const boundedAboveCost =
-      table.bounded_above_cost === undefined ? undefined : v.number(table, "bounded_above_cost", where, "non-negative");
+    const bounded = expression(table, "bounded", where, "truth");
     const maxHeavy = v.number(table, "max_heavy", where, "positive");
     if (maxHeavy !== undefined && !Number.isInteger(maxHeavy)) {
       v.error(path(where, "max_heavy"), `must be an integer, got ${maxHeavy}`);
@@ -205,18 +259,18 @@ export function parseConfig(text: string, label: string, file: string, home = ho
       ...(plan !== undefined ? { plan } : {}),
       ...(quotaName !== undefined ? { quotaName } : {}),
       boundedOnly,
-      ...(boundedAboveCost !== undefined ? { boundedAboveCost } : {}),
+      ...(bounded !== undefined ? { bounded } : {}),
       maxHeavy: maxHeavy ?? 1,
       windowOverrides: windows,
     };
   }
 
-  const policy: Policy = { prefer: [], preferMinSpare: 0, spareStep: 1, cheapCost: 0, heavyScore: 0 };
+  const policy: Policy = { prefer: [], preferMinSpare: 0, spareStep: 1 };
   if (root.policy === undefined) v.error("", 'missing "policy"');
   else {
     const table = v.table(root.policy, "policy");
     if (table) {
-      v.keys(table, ["prefer", "prefer_min_spare", "spare_step", "cheap_cost", "heavy_score"], "policy");
+      keys(table, ["prefer", "prefer_min_spare", "spare_step", "cheap", "heavy"], REMOVED_KEYS.policy!, "policy");
       const prefer = v.strings(table, "prefer", "policy");
       prefer?.forEach((provider, i) => {
         if (!providerNames.includes(provider)) v.error(`policy.prefer[${i}]`, `provider ${show(provider)} is not in providers`);
@@ -224,20 +278,22 @@ export function parseConfig(text: string, label: string, file: string, home = ho
       policy.prefer = prefer ?? [];
       policy.preferMinSpare = v.number(table, "prefer_min_spare", "policy") ?? 0;
       policy.spareStep = v.number(table, "spare_step", "policy", "positive") ?? 1;
-      policy.cheapCost = v.number(table, "cheap_cost", "policy", "non-negative") ?? 0;
-      policy.heavyScore = v.number(table, "heavy_score", "policy", "non-negative") ?? 0;
+      const cheap = expression(table, "cheap", "policy", "truth");
+      if (cheap) policy.cheap = cheap;
+      const heavy = expression(table, "heavy", "policy", "truth");
+      if (heavy) policy.heavy = heavy;
     }
   }
 
   const jobs: Record<string, Job> = {};
   if (root.jobs !== undefined) {
     const table = v.table(root.jobs, "jobs");
-    for (const [name, value] of Object.entries(table ?? {})) {
+    for (const [name, item] of Object.entries(table ?? {})) {
       const where = `jobs.${name}`;
       if (!/^[a-z][a-z0-9_-]*$/.test(name)) v.error(where, "a job name is lowercase letters, digits, - and _, starting with a letter");
-      const entry = v.table(value, where);
+      const entry = v.table(item, where);
       if (!entry) continue;
-      v.keys(entry, ["score", "tags", "about"], where);
+      v.keys(entry, ["score", "tags", "about", "value", "where"], where);
       const score = v.string(entry, "score", where);
       let range: { min: number; max?: number } | undefined;
       if (score !== undefined) {
@@ -249,8 +305,10 @@ export function parseConfig(text: string, label: string, file: string, home = ho
       }
       const jobTags = knownTags(v.strings(entry, "tags", where, false), `${where}.tags`);
       const about = v.nonEmptyString(entry, "about", where);
+      const value = expression(entry, "value", where, "number");
+      const filter = expression(entry, "where", where, "truth");
       if (score !== undefined && range && about !== undefined) {
-        jobs[name] = { name, score, ...range, tags: jobTags, about };
+        jobs[name] = { name, score, ...range, tags: jobTags, about, ...(value ? { value } : {}), ...(filter ? { where: filter } : {}) };
       }
     }
   }
@@ -293,6 +351,7 @@ export function parseConfig(text: string, label: string, file: string, home = ho
   return {
     data: resolvePath(dataPath!, dirname(resolve(file)), home),
     columns,
+    formulas,
     policy,
     providers,
     tags,
@@ -300,6 +359,30 @@ export function parseConfig(text: string, label: string, file: string, home = ho
     models,
     exclude,
   };
+}
+
+/** A message for each cycle among the formulas, as `formulas.a: refers to itself through b`. */
+function formulaCycles(formulas: Record<string, Expr>): string[] {
+  const messages: string[] = [];
+  const reported = new Set<string>();
+  const done = new Set<string>();
+  const visit = (name: string, trail: string[]): void => {
+    const start = trail.indexOf(name);
+    if (start !== -1) {
+      const cycle = trail.slice(start);
+      if (!cycle.some((member) => reported.has(member))) {
+        cycle.forEach((member) => reported.add(member));
+        const through = cycle.slice(1);
+        messages.push(`formulas.${name}: refers to itself${through.length > 0 ? ` through ${through.join(", ")}` : ""}`);
+      }
+      return;
+    }
+    if (done.has(name)) return;
+    for (const ref of formulas[name]!.names) if (ref.name in formulas) visit(ref.name, [...trail, name]);
+    done.add(name);
+  };
+  for (const name of Object.keys(formulas)) visit(name, []);
+  return messages;
 }
 
 /**
@@ -388,21 +471,37 @@ export function loadConfig(file: ConfigFile, home = homedir()): Config {
   return parseConfig(readConfigText(file), file.path, file.path, home);
 }
 
-/** The configuration and its data, validated together. */
+/** The configuration and its data, validated together, with every formula and predicate evaluated for every row. */
 export interface Routing {
   config: Config;
   data: Data;
+  results: Results;
+}
+
+/**
+ * Validates the configuration against the data's text and evaluates its
+ * formulas and predicates, and `extra`, for every row. Problems with names
+ * come first, against the header alone; then the data, with every used
+ * column; then the model references and the values. `label` prefixes the
+ * configuration's messages, `dataLabel` the data's.
+ */
+export function buildRouting(config: Config, dataText: string, label: string, dataLabel: string, extra: readonly Located[] = []): Routing {
+  const names = checkColumns(config, parseHeader(dataText, dataLabel), label, extra);
+  if (names.length > 0) throw new ConfigError(names);
+  const data = parseData(dataText, dataLabel, usedColumns(config, extra));
+  const problems = checkAgainstData(config, data, label);
+  if (problems.length > 0) throw new ConfigError(problems);
+  const { results, problems: values } = evaluateRows(config, data, dataLabel, extra);
+  if (values.length > 0) throw new ConfigError(values);
+  return { config, data, results };
 }
 
 /**
  * Loads the configuration and the data it points at, or `dataPath` instead,
- * and validates them together.
+ * and validates them together; see `buildRouting`.
  */
-export function loadRouting(file: ConfigFile, dataPath?: string): Routing {
+export function loadRouting(file: ConfigFile, dataPath?: string, extra: readonly Located[] = []): Routing {
   const config = loadConfig(file);
   if (dataPath !== undefined) config.data = resolve(dataPath);
-  const data = loadData(config.data, config.columns.use);
-  const problems = checkAgainstData(config, data, file.path);
-  if (problems.length > 0) throw new ConfigError(problems);
-  return { config, data };
+  return buildRouting(config, readDataText(config.data), file.path, config.data, extra);
 }

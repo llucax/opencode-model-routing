@@ -6,6 +6,7 @@ import { CatalogError, defaultModelsJsonPath, loadModelsJson, matchModels, type 
 import { loadConfig, loadRouting, locateConfig, type Config, type Routing } from "./config.ts";
 import { dataModels, isEffort, normalizeId } from "./data.ts";
 import { formatBrief, NO_WORKAROUND } from "./format.ts";
+import { truthAt } from "./formulas.ts";
 import { liveCatalog, runningSessions, type RunningSession } from "./live.ts";
 import { loadQuota, type Quota } from "./quota.ts";
 import { buildRequest, NEEDS, UsageError } from "./request.ts";
@@ -23,16 +24,16 @@ export interface ToolArgs {
 
 /**
  * How many heavy sessions run per provider. A session counts when its model
- * is a data model at a configured provider and its row at the session's
- * effort is heavy; with no variant, or an effort the data lacks, it counts
- * when any row of the model is heavy.
+ * is a data model at a configured provider and the policy's `heavy` holds
+ * for its row at the session's effort; with no variant, or an effort the
+ * data lacks, it counts when it holds for any row of the model.
  */
 export function countHeavy(
   sessions: RunningSession[],
   routing: Routing,
   catalog: Catalog,
 ): { running: Record<string, number>; notes: string[] } {
-  const { config, data } = routing;
+  const { config, data, results } = routing;
   const models = dataModels(data);
   const matches = matchModels(
     [...models.values()].map((entry) => entry.model),
@@ -59,9 +60,8 @@ export function countHeavy(
     if (key === undefined) continue;
     const rows = data.rows.filter((row) => normalizeId(row.model) === key);
     const exact = variant !== undefined && isEffort(variant) ? rows.find((row) => row.effort === variant) : undefined;
-    const scores = exact ? [exact.values[config.columns.score]!] : rows.map((row) => row.values[config.columns.score]!);
     if (!exact) guessed++;
-    if (scores.some((score) => score >= config.policy.heavyScore)) running[providerID]!++;
+    if ((exact ? [exact] : rows).some((row) => truthAt(results, row, config.policy.heavy))) running[providerID]!++;
   }
   const notes: string[] = [];
   if (withoutModel > 0) notes.push(`${withoutModel} running session${withoutModel === 1 ? " has" : "s have"} no model yet and ${withoutModel === 1 ? "was" : "were"} not counted.`);

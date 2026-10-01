@@ -1,4 +1,4 @@
-model,vendor,effort,date,score,cost
+model,vendor,effort,date,quality,price
 Acme Big,acme,high,2000-01-02,60,5
 Acme Big,acme,low,2000-01-01,40,1
 Acme Small,acme,high,2000-01-03,45,1

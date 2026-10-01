@@ -4,7 +4,7 @@ import { NO_WORKAROUND } from "../src/format.ts";
 import type { RunningSession } from "../src/live.ts";
 import { unknownQuota } from "../src/quota.ts";
 import { countHeavy, runTool, ToolError, toolDescription, toolParameters, type ToolArgs, type ToolDeps } from "../src/tool.ts";
-import { fixtureCatalog, fixtureData } from "./helpers.ts";
+import { editedConfig, fixtureCatalog, fixtureData, fixtureText, routing as routingOf } from "./helpers.ts";
 
 const routing = fixtureData();
 const session = (providerID: string, modelID: string, variant?: string): RunningSession => ({
@@ -44,6 +44,12 @@ describe("heavy running sessions", () => {
     ], routing, fixtureCatalog);
     expect(result.running).toEqual({ anthropic: 0, openai: 0, "github-copilot": 1 });
     expect(result.notes).toEqual([]);
+  });
+  test("the heavy predicate decides, whatever it reads; without one nothing is heavy", () => {
+    const byCost = routingOf(fixtureText, editedConfig('heavy = "score >= 55"', 'heavy = "cost >= 2"'));
+    expect(countHeavy([session("openai", "zed-pro", "xhigh"), session("openai", "zed-pro", "high")], byCost, fixtureCatalog).running.openai).toBe(1);
+    const none = routingOf(fixtureText, editedConfig('heavy = "score >= 55"\n', ""));
+    expect(countHeavy([session("anthropic", "acme-big", "high"), session("anthropic", "acme-big")], none, fixtureCatalog).running.anthropic).toBe(0);
   });
   test("running sessions without a model add a note, but not to a provider's count", () => {
     const result = countHeavy([{ id: "first", directory: "/work" }, { id: "second", directory: "/other" }], routing, fixtureCatalog);
@@ -87,7 +93,7 @@ describe("tool execution with fake dependencies", () => {
     const result = await runTool({ job: "implement" }, deps());
     expect(result.title).toBe("anthropic/acme-small high");
     expect(result.routes).toHaveLength(1);
-    expect(result.output).toContain("score 45, cost 1");
+    expect(result.output).toContain("(value -1, quality 45, price 1)");
     expect(result.output).toContain("5 more routes; pass limit to see them.");
     expect(result.output).toContain("quota: anthropic spare ?, openai spare ?, github-copilot spare ?");
   });

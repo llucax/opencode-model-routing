@@ -9,7 +9,8 @@
 #   3. ${XDG_CONFIG_HOME:-$HOME/.config}/opencode/model-routing/config.toml
 #
 # Copy this file there and edit it: keep only the providers you have, point
-# `data` at your data, and set the thresholds and jobs for its scale. Anything
+# `data` at your data, and set the formulas, predicates and jobs for its
+# scale. Anything
 # not recognized is an error; `model-route check` validates the file, its
 # data and the agents that recommend jobs or ranges.
 #
@@ -21,14 +22,36 @@
 # this file.
 data = "models.csv"
 
-# The data columns routing reads; any other column is ignored. Each must
-# hold a number in every row.
+# Formulas and predicates are expressions over the data's columns: numbers,
+# column and formula names, + - * / ^ and parentheses, the functions log
+# (natural), log2, log10, sqrt, abs, min and max; and, for predicates only,
+# the comparisons < <= > >= == != joined with and, or and not. A formula must
+# give a number, a predicate a comparison or a combination of them. They are
+# computed once per data row when the data is loaded; a result that isn't a
+# finite number (log2(0), a division by zero) is an error naming the row.
+#
+# Routing reads only the columns some formula or predicate uses, plus those in
+# columns.include; each must hold a number in every row, and any other column
+# is ignored.
+
+# Optional: columns always shown, even when no formula uses them.
 [columns]
-use = ["intelligence", "cost_per_task", "tokens_per_task", "time_per_task"]
-# Filtered by score ranges (a job's or `score`), compared with heavy_score.
+include = ["tokens_per_task", "time_per_task"]
+
+# Named formulas. score, cost and value are required; add any others. A
+# formula may use columns and other formulas, without cycles, and a formula
+# can't have a column's name.
+[formulas]
+# Filtered by score ranges (a job's or the request's), and the nearest
+# routes' distance.
 score = "intelligence"
-# Compared with cheap_cost and bounded_above_cost, and ranked by.
+# Shown as the cost, and the tie-break after the value.
 cost = "cost_per_task"
+# The ranking, higher first, after provider standing and tags: here each
+# doubling of the cost must buy 60 points of score.
+value = "score - 60 * log2(cost)"
+# A stricter value, for jobs that should also save tokens.
+lean = "value - 30 * log2(tokens_per_task / 10000)"
 
 [policy]
 # Providers in order of preference. A provider keeps its place while its spare
@@ -38,12 +61,13 @@ cost = "cost_per_task"
 prefer = ["anthropic", "openai", "github-copilot"]
 prefer_min_spare = -10
 spare_step = 10
-# A route costing at most cheap_cost, with every requested tag and a spare of
-# at least prefer_min_spare, ranks ahead of every preferred provider.
-cheap_cost = 0.60
-# A route scoring at least heavy_score is heavy: only the provider's
-# max_heavy heavy sessions should run at once.
-heavy_score = 780
+# Optional predicate: a cheap route, with every requested tag and a spare of
+# at least prefer_min_spare, ranks ahead of every preferred provider. Absent,
+# no route is cheap.
+cheap = "cost <= 0.60"
+# Optional predicate: a heavy route counts against the provider's max_heavy,
+# how many heavy sessions should run at once. Absent, no route is heavy.
+heavy = "score >= 780"
 
 # Only the providers listed here are used, by their OpenCode provider ID. A
 # data model is offered at each of them whose catalog has its ID, compared
@@ -54,7 +78,7 @@ heavy_score = 780
 #   session on a heavy route (yours included) and long-running workers.
 # quota_name: the provider's name in the quota data, when it differs.
 # bounded_only: models for bounded work only (one job, never a loop).
-# bounded_above_cost: any route costing more is bounded work only too.
+# bounded: a predicate; the routes it holds for are bounded work only too.
 # window_overrides: complete the quota windows the quota data reports, with a
 #   length when it has none and the models a window is limited to; a window
 #   the quota data doesn't report does nothing.
@@ -66,7 +90,7 @@ window_overrides = [{ name = "Claude Fable Weekly", length = "weekly", models = 
 [providers.openai]
 plan = "ChatGPT Plus"
 max_heavy = 1
-bounded_above_cost = 0.60
+bounded = "cost > 0.60"
 
 [providers.github-copilot]
 plan = "Copilot Business seat"
@@ -87,9 +111,13 @@ fast = "low latency"
 # Jobs are what agents ask for: a score range (`A-B`, or `A+` for at least A),
 # optional tags, and one line saying when to use it. The tool lists them in its
 # description, so adding, renaming or removing one needs an OpenCode restart.
+# Optional: `value`, a formula to rank by instead of formulas.value (a name or
+# any expression), and `where`, a predicate the routes must pass.
 [jobs.triage]
 score = "500-640"
 tags = ["fast"]
+value = "lean"
+where = "time_per_task < 600"
 about = "triage, mechanical or fixed-rule work, micro-fixes"
 
 [jobs.implement]

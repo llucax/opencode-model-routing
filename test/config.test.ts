@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigError, EXAMPLE_DIR, checkAgainstData, describeSource, loadConfig, loadRouting, locateConfig, parseConfig, readConfigText, resolvePath } from "../src/config.ts";
-import { editedConfig, fixtureConfig, fixtureConfigText, fixtureData, fixtureText, tempDir, writeFiles } from "./helpers.ts";
+import { ConfigError, EXAMPLE_DIR, buildRouting, checkAgainstData, describeSource, loadConfig, loadRouting, locateConfig, parseConfig, readConfigText, resolvePath } from "../src/config.ts";
+import { DataError } from "../src/data.ts";
+import { compile } from "../src/expr.ts";
+import { usedColumns } from "../src/formulas.ts";
+import { edited, editedConfig, fixtureConfig, fixtureConfigText, fixtureData, fixtureText, routing, tempDir, writeFiles } from "./helpers.ts";
 
 const parse = (text = fixtureConfigText, file = fixtureConfig) => parseConfig(text, "config.toml", file, "/home/tester");
 function errors(text: string): string[] {
@@ -15,7 +18,10 @@ describe("config and data", () => {
   test("loads the config and its relative CSV, with roles, jobs, tags, aliases and providers", () => {
     const { config, data } = loadRouting({ path: fixtureConfig, source: "--config" });
     expect(config.data).toBe(join(import.meta.dir, "fixtures", "models.csv"));
-    expect(config.columns).toEqual({ use: ["score", "cost"], score: "score", cost: "cost" });
+    expect(config.columns).toEqual({ include: [] });
+    expect(Object.fromEntries(Object.entries(config.formulas).map(([name, expr]) => [name, expr.text]))).toEqual({ score: "quality", cost: "price", value: "-cost" });
+    expect(config.policy.cheap?.text).toBe("cost <= 0.15");
+    expect(config.policy.heavy?.text).toBe("score >= 55");
     expect(config.jobs.implement).toMatchObject({ name: "implement", min: 40, max: 47, tags: ["code"] });
     expect(config.tags.vision).toBe("images.");
     expect(config.models["acme big"]?.ids).toEqual({ anthropic: "acme-big", "github-copilot": "acme-big.1" });
@@ -50,9 +56,11 @@ describe("config and data", () => {
       'config.toml: providers.anthropic.window_overrides[0].models[0]: model "Ghost" is not in the data',
     ]);
   });
-  test("plan and bounded_above_cost are optional per provider", () => {
-    const text = editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nplan = "Plus"\nmax_heavy = 1\nbounded_above_cost = 0.5');
-    expect(parse(text).providers.openai).toMatchObject({ plan: "Plus", boundedAboveCost: 0.5 });
+  test("plan and bounded are optional per provider", () => {
+    const text = editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nplan = "Plus"\nmax_heavy = 1\nbounded = "cost > 0.5"');
+    expect(parse(text).providers.openai).toMatchObject({ plan: "Plus" });
+    expect(parse(text).providers.openai!.bounded?.text).toBe("cost > 0.5");
+    expect(parse().providers.openai!.bounded).toBeUndefined();
     expect(parse().providers.openai).toMatchObject({ maxHeavy: 1, boundedOnly: [], windowOverrides: [] });
   });
   test("without loading data, unknown model references and unoffered providers can parse", () => {
@@ -68,12 +76,120 @@ describe("config and data", () => {
 });
 
 describe("configuration validation", () => {
-  test("required sections and columns roles", () => {
-    expect(errors("")).toEqual(['config.toml: missing "data"', 'config.toml: missing "columns"', 'config.toml: missing "providers"', 'config.toml: missing "policy"']);
-    expect(errors(editedConfig('use = ["score", "cost"]', 'use = ["score", "score", "date"]'))).toContain('config.toml: columns.use[1]: duplicate column "score"');
-    expect(errors(editedConfig('use = ["score", "cost"]', 'use = ["score", "score", "date"]'))).toContain('config.toml: columns.use[2]: "date" is not a numeric column');
-    expect(errors(editedConfig('cost = "cost"', 'cost = "missing"'))).toEqual(['config.toml: columns.cost: "missing" is not in columns.use']);
-    expect(errors(editedConfig('use = ["score", "cost"]', 'use = []'))).toContain('config.toml: columns.use: must not be empty');
+  test("required sections and columns.include", () => {
+    expect(errors("")).toEqual(['config.toml: missing "data"', 'config.toml: missing "formulas"', 'config.toml: missing "providers"', 'config.toml: missing "policy"']);
+    const include = (list: string) => editedConfig("[formulas]", `[columns]\ninclude = ${list}\n\n[formulas]`);
+    expect(parse(include('["quality", "price"]')).columns.include).toEqual(["quality", "price"]);
+    expect(errors(include('["quality", "quality", "date"]'))).toEqual([
+      'config.toml: columns.include[1]: duplicate column "quality"',
+      'config.toml: columns.include[2]: "date" is not a numeric column',
+    ]);
+    expect(errors(include("3"))).toEqual(["config.toml: columns.include: must be an array of strings"]);
+  });
+  test("v1's keys fail with a hint to their replacement", () => {
+    const old = editedConfig("[formulas]", '[columns]\nuse = ["quality"]\nscore = "quality"\ncost = "price"\n\n[formulas]')
+      .replace('cheap = "cost <= 0.15"', "cheap_cost = 0.15")
+      .replace('heavy = "score >= 55"', "heavy_score = 55")
+      .replace("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 1\nbounded_above_cost = 1");
+    expect(errors(old)).toEqual([
+      "config.toml: columns.use: no longer exists; formulas use the columns they refer to; list any other column to show in columns.include",
+      'config.toml: columns.score: no longer exists; use formulas.score, as score = "intelligence"',
+      'config.toml: columns.cost: no longer exists; use formulas.cost, as cost = "cost_per_task"',
+      'config.toml: providers.openai.bounded_above_cost: no longer exists; use the predicate bounded, as bounded = "cost > 0.5"',
+      'config.toml: policy.cheap_cost: no longer exists; use the predicate policy.cheap, as cheap = "cost <= 0.5"',
+      'config.toml: policy.heavy_score: no longer exists; use the predicate policy.heavy, as heavy = "score >= 780"',
+    ]);
+  });
+});
+
+describe("formulas and predicates", () => {
+  const formulas = (extra: string) => editedConfig('value = "-cost"', `value = "-cost"\n${extra}`);
+  test("score, cost and value are required, others are free", () => {
+    expect(errors(editedConfig('value = "-cost"\n', ""))).toEqual(['config.toml: formulas: missing "value"']);
+    expect(errors(editedConfig('score = "quality"\ncost = "price"\n', ""))).toEqual([
+      'config.toml: formulas: missing "score"',
+      'config.toml: formulas: missing "cost"',
+    ]);
+    expect(parse(formulas('lean = "value - log2(price)"')).formulas.lean?.text).toBe("value - log2(price)");
+  });
+  test("names must be identifiers, and expressions must parse and give the right type", () => {
+    expect(errors(formulas('"two words" = "1"\nand = "1"'))).toEqual([
+      'config.toml: formulas.two words: a formula name is letters, digits and _, not starting with a digit, and not and, or or not',
+      "config.toml: formulas.and: a formula name is letters, digits and _, not starting with a digit, and not and, or or not",
+    ]);
+    expect(errors(editedConfig('value = "-cost"', 'value = "cost <= 0.5"'))).toEqual([
+      "config.toml: formulas.value: column 6: a formula must give a number, this is a comparison",
+    ]);
+    expect(errors(editedConfig('cheap = "cost <= 0.15"', 'cheap = "cost"'))).toEqual([
+      "config.toml: policy.cheap: column 1: a predicate must be a comparison or a combination of them, this is a number",
+    ]);
+    expect(errors(editedConfig('heavy = "score >= 55"', 'heavy = "score >= "'))).toEqual([
+      'config.toml: policy.heavy: column 10: unexpected end of the expression, expected a number, a name or "("',
+    ]);
+    expect(errors(editedConfig('value = "-cost"', "value = 3"))).toEqual(["config.toml: formulas.value: must be a string"]);
+    expect(errors(editedConfig('value = "-cost"', 'value = " "'))).toEqual(["config.toml: formulas.value: must not be empty"]);
+  });
+  test("formulas can't refer to themselves, directly or through others", () => {
+    expect(errors(formulas('a = "b + 1"\nb = "c * 2"\nc = "a"\nd = "d"\ne = "a"'))).toEqual([
+      "config.toml: formulas.a: refers to itself through b, c",
+      "config.toml: formulas.d: refers to itself",
+    ]);
+  });
+  test("cheap and heavy are optional: absent, nothing is cheap or heavy", () => {
+    const config = parse(editedConfig('cheap = "cost <= 0.15"\nheavy = "score >= 55"\n', ""));
+    expect(config.policy.cheap).toBeUndefined();
+    expect(config.policy.heavy).toBeUndefined();
+  });
+  test("jobs take an optional value formula and where predicate", () => {
+    const text = editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "value - price"\nwhere = "quality < 50"');
+    expect(parse(text).jobs.implement?.value?.text).toBe("value - price");
+    expect(parse(text).jobs.implement?.where?.text).toBe("quality < 50");
+    expect(errors(text.replace('where = "quality < 50"', 'where = "quality"'))).toEqual([
+      "config.toml: jobs.implement.where: column 1: a predicate must be a comparison or a combination of them, this is a number",
+    ]);
+  });
+  test("used columns: those every formula and predicate uses, transitively, columns.include and extra expressions", () => {
+    const config = parse(formulas('unused = "speed"').replace("[formulas]", '[columns]\ninclude = ["tokens"]\n\n[formulas]'));
+    expect(usedColumns(config)).toEqual(["tokens", "quality", "price", "speed"]);
+    expect(usedColumns(config, [{ key: "--where", expr: compile("latency < 3", "truth") }])).toContain("latency");
+  });
+  test("other columns are ignored, even when they don't hold numbers", () => {
+    const text = fixtureText.split("\n").map((line, i) => (line === "" ? line : i === 0 ? `${line},notes` : `${line},free text`)).join("\n");
+    expect(routing(text).data.rows).toHaveLength(8);
+  });
+  test("names are checked against the header: unknown names, included columns and formulas named like a column", () => {
+    const bad = formulas('quality = "1"\nodd = "qualty + 1"')
+      .replace('heavy = "score >= 55"', 'heavy = "scor >= 55"')
+      .replace("[formulas]", '[columns]\ninclude = ["ghost"]\n\n[formulas]');
+    const config = parseConfig(bad, "config.toml", fixtureConfig);
+    try {
+      buildRouting(config, fixtureText, "config.toml", "models.csv", [{ key: "--where", expr: compile("nope > 1", "truth") }]);
+      throw new Error("expected ConfigError");
+    } catch (error) {
+      expect((error as ConfigError).messages).toEqual([
+        'config.toml: formulas.quality: "quality" is also a data column; rename the formula or the column',
+        'config.toml: columns.include[0]: unknown column "ghost", not in the data',
+        'config.toml: formulas.odd: column 1: unknown name "qualty", neither a data column nor a formula',
+        'config.toml: policy.heavy: column 1: unknown name "scor", neither a data column nor a formula',
+        '--where: column 1: unknown name "nope", neither a data column nor a formula',
+      ]);
+    }
+  });
+  test("a used column must hold a number in every row", () => {
+    expect(() => routing(edited("Zed Pro,zed,high,2000-01-03,47,1.5", "Zed Pro,zed,high,2000-01-03,47,"))).toThrow(DataError);
+  });
+  test("non-finite values are errors with the row's file:line, the key and the column; every one is reported", () => {
+    const text = editedConfig('value = "-cost"', 'value = "-log2(cost - 0.1)"').replace('heavy = "score >= 55"', 'heavy = "score / (cost - 1) > 0"');
+    try {
+      routing(fixtureText, text);
+      throw new Error("expected ConfigError");
+    } catch (error) {
+      expect((error as ConfigError).messages).toEqual([
+        "models.csv:3: policy.heavy: column 7: \"/\" gives Infinity",
+        "models.csv:4: policy.heavy: column 7: \"/\" gives Infinity",
+        "models.csv:8: formulas.value: column 2: log2() gives -Infinity",
+      ]);
+    }
   });
   test("unknown tags and job names, ranges, and required descriptions", () => {
     expect(errors(editedConfig('tags = ["code"]', 'tags = ["unknown"]'))).toEqual(['config.toml: jobs.implement.tags[0]: unknown tag "unknown"; define it in [tags]']);
@@ -96,20 +212,17 @@ describe("configuration validation", () => {
   });
   test("policy numbers must have the required type and range", () => {
     const cases = [
-      ["cheap_cost = 0.15", 'cheap_cost = "low"', "must be a number"],
-      ["cheap_cost = 0.15", "cheap_cost = -1", "must not be negative, got -1"],
-      ["heavy_score = 55", "heavy_score = true", "must be a number"],
       ["spare_step = 10", "spare_step = 0", "must be positive, got 0"],
       ["prefer_min_spare = -10", 'prefer_min_spare = "low"', "must be a number"],
     ];
     for (const [before, after, message] of cases) expect(errors(editedConfig(before!, after!)).some((error) => error.endsWith(message!))).toBe(true);
   });
-  test("provider max_heavy, bounded cost and plan validate independently", () => {
+  test("provider max_heavy, bounded and plan validate independently", () => {
     expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 0"))).toContain(
       "config.toml: providers.openai.max_heavy: must be positive, got 0",
     );
-    expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nbounded_above_cost = "x"'))).toContain(
-      "config.toml: providers.openai.bounded_above_cost: must be a number",
+    expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", '[providers.openai]\nmax_heavy = 1\nbounded = "x"'))).toContain(
+      "config.toml: providers.openai.bounded: column 1: a predicate must be a comparison or a combination of them, this is a number",
     );
     expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 1\nplan = 3"))).toContain(
       "config.toml: providers.openai.plan: must be a string",
@@ -119,13 +232,11 @@ describe("configuration validation", () => {
     );
   });
   test("missing required policy and provider keys are diagnosed", () => {
-    expect(errors(editedConfig("cheap_cost = 0.15\n", ""))).toContain('config.toml: policy: missing "cheap_cost"');
-    expect(errors(editedConfig("heavy_score = 55\n", ""))).toContain('config.toml: policy: missing "heavy_score"');
     expect(errors(editedConfig("[providers.openai]\nmax_heavy = 1", "[providers.openai]"))).toContain('config.toml: providers.openai: missing "max_heavy"');
   });
   test("an empty providers table is invalid, and several issues are collected", () => {
-    expect(errors('data = "x"\n[columns]\nuse = ["score", "cost"]\nscore = "score"\ncost = "cost"\n[providers]\n[policy]\nprefer = []\nprefer_min_spare = 0\nspare_step = 1\ncheap_cost = 0\nheavy_score = 0\n')).toContain("config.toml: providers: must not be empty");
-    const problems = errors(editedConfig("spare_step = 10", "spare_step = -1").replace("heavy_score = 55", "heavy_score = -3")
+    expect(errors('data = "x"\n[formulas]\nscore = "s"\ncost = "c"\nvalue = "-c"\n[providers]\n[policy]\nprefer = []\nprefer_min_spare = 0\nspare_step = 1\n')).toContain("config.toml: providers: must not be empty");
+    const problems = errors(editedConfig("spare_step = 10", "spare_step = -1").replace('heavy = "score >= 55"', 'heavy = "score"')
       .replace("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 0"));
     expect(problems).toHaveLength(3);
   });

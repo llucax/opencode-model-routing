@@ -1,5 +1,6 @@
 // The data file: one CSV row per model and effort, with any number of numeric
-// columns. Which columns matter is up to the configuration (`columns.use`).
+// columns. Which columns matter is up to the configuration: those its
+// formulas and predicates use, and those it includes.
 
 import { CsvError, parseCsv } from "./csv.ts";
 import { readText, show, ValidationError } from "./validate.ts";
@@ -183,6 +184,19 @@ export function parseData(text: string, label: string, use?: readonly string[]):
   if (errors.length > 0) throw new DataError(errors);
   if (rows.length === 0) throw new DataError([`${label}: no rows`]);
   return { columns, rows, ...(snapshot ? { snapshot } : {}) };
+}
+
+/** The column names of the data's header, trimmed; `label` prefixes the error. */
+export function parseHeader(text: string, label: string): string[] {
+  let records;
+  try {
+    records = parseCsv(text);
+  } catch (error) {
+    if (error instanceof CsvError) throw new DataError([`${label}:${error.line}: CSV syntax error: ${error.message}`]);
+    throw error;
+  }
+  if (records[0] === undefined) throw new DataError([`${label}: empty file, expected a header row`]);
+  return records[0].fields.map((name) => name.trim());
 }
 
 /** Reads the data file at `path`; `label` prefixes the error. */
