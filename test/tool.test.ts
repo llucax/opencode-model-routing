@@ -4,7 +4,7 @@ import { NO_WORKAROUND } from "../src/format.ts";
 import type { RunningSession } from "../src/live.ts";
 import { unknownQuota } from "../src/quota.ts";
 import { countHeavy, runTool, ToolError, toolDescription, toolParameters, type ToolArgs, type ToolDeps } from "../src/tool.ts";
-import { editedConfig, fixtureCatalog, fixtureData, fixtureText, routing as routingOf } from "./helpers.ts";
+import { editedConfig, fixtureCatalog, fixtureData, fixtureText, routing as routingOf, staleConfigText } from "./helpers.ts";
 
 const routing = fixtureData();
 const session = (providerID: string, modelID: string, variant?: string): RunningSession => ({
@@ -20,6 +20,16 @@ function deps(sessions: RunningSession[] = []): ToolDeps {
     sessions: async () => ({ sessions, warnings: [] }),
   };
 }
+
+describe("stale model references", () => {
+  test("the tool routes as without them and doesn't mention them", async () => {
+    const stale = routingOf(fixtureText, staleConfigText);
+    const clean = await runTool({ job: "implement", limit: 0 }, deps());
+    const result = await runTool({ job: "implement", limit: 0 }, { ...deps(), routing: () => stale });
+    expect(result.output).toBe(clean.output);
+    for (const id of ["Ghost", "Phantom", "Nobody", "Missing"]) expect(result.output).not.toContain(id);
+  });
+});
 
 describe("heavy running sessions", () => {
   test("an exact heavy effort counts, an exact light effort does not", () => {

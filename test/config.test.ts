@@ -5,7 +5,7 @@ import { ConfigError, EXAMPLE_DIR, buildRouting, checkAgainstData, describeSourc
 import { DataError } from "../src/data.ts";
 import { compile } from "../src/expr.ts";
 import { usedColumns } from "../src/formulas.ts";
-import { edited, editedConfig, fixtureConfig, fixtureConfigText, fixtureData, fixtureText, routing, tempDir, writeFiles } from "./helpers.ts";
+import { edited, editedConfig, fixtureConfig, fixtureConfigText, fixtureData, fixtureText, routing, staleConfigText, staleWarnings, tempDir, writeFiles } from "./helpers.ts";
 
 const parse = (text = fixtureConfigText, file = fixtureConfig) => parseConfig(text, "config.toml", file, "/home/tester");
 function errors(text: string): string[] {
@@ -28,6 +28,7 @@ describe("config and data", () => {
     expect(config.providers["github-copilot"]).toMatchObject({ quotaName: "copilot", boundedOnly: ["Acme Big"], maxHeavy: 1 });
     expect(data.rows).toHaveLength(8);
     expect(checkAgainstData(config, data, "config.toml")).toEqual([]);
+    expect(loadRouting({ path: fixtureConfig, source: "--config" }).stale).toEqual([]);
   });
   test("absolute, relative and tilde data paths", () => {
     expect(resolvePath("~/models.csv", "/base", "/home/tester")).toBe("/home/tester/models.csv");
@@ -49,6 +50,13 @@ describe("config and data", () => {
       'config.toml: exclude[1].model: model "Nobody" is not in the data',
       'config.toml: providers.github-copilot.bounded_only[0]: model "Ghost" is not in the data',
     ]);
+  });
+  test("model references absent from the data are stale, not errors", () => {
+    expect(routing(fixtureText, staleConfigText).stale).toEqual(staleWarnings("config.toml"));
+  });
+  test("a stale reference doesn't hide a real error", () => {
+    const text = staleConfigText.replace('cost = "price"', 'cost = "ghost_column"');
+    expect(() => routing(fixtureText, text)).toThrow(ConfigError);
   });
   test("window model references are checked against the data", () => {
     const changed = parse(editedConfig('models = ["Acme Big"]', 'models = ["Ghost"]'));

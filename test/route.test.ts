@@ -5,7 +5,7 @@ import { buildRequest, describeJobs, parseRange, splitList, UsageError } from ".
 import { resolveNotModel, route, type Route, type RouteInputs } from "../src/route.ts";
 import { matchModels } from "../src/catalog.ts";
 import { compile } from "../src/expr.ts";
-import { configOnly, editedConfig, fixtureCatalog, fixtureConfigText, fixtureData, fixtureText, routeFixture, routing } from "./helpers.ts";
+import { configOnly, editedConfig, fixtureCatalog, fixtureConfigText, fixtureData, fixtureText, routeFixture, routing, staleConfigText } from "./helpers.ts";
 
 const names = (routes: Route[]) => routes.map((r) => `${r.provider}/${r.modelId} ${r.effort}`);
 const req = (input: Parameters<typeof buildRequest>[0] = {}, selected = fixtureData()) => buildRequest(input, selected.config, 0);
@@ -16,6 +16,21 @@ function withWindows(windows: Record<string, WindowState[]>, selected = fixtureD
   for (const [provider, value] of Object.entries(windows)) quota.providers[provider] = { provider, windows: value };
   return { routing: selected, catalog: fixtureCatalog, quota };
 }
+
+describe("stale model references", () => {
+  test("routing ignores references to models and efforts the data lacks", () => {
+    const stale = routing(fixtureText, staleConfigText);
+    for (const input of [{}, { job: "implement" }, { score: "55+" }]) {
+      const quota = { "github-copilot": [window(-5)], anthropic: [window(30, { label: "Acme Big Weekly" })] };
+      const clean = route(req(input), withWindows(quota));
+      const result = route(req(input, stale), withWindows(quota, stale));
+      expect(names(result.routes)).toEqual(names(clean.routes));
+      expect(result.routes.map((r) => r.bounded)).toEqual(clean.routes.map((r) => r.bounded));
+      expect(result.excluded).toEqual([]);
+      expect(result.warnings).toEqual(clean.warnings);
+    }
+  });
+});
 
 describe("requests", () => {
   test("parses inclusive decimal score ranges, lists and rejects invalid ranges", () => {

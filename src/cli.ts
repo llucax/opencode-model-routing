@@ -176,6 +176,7 @@ function runCheck(options: Options): number {
     files = checked.files;
   }
 
+  print(routing.stale.map((message) => `warning: ${message}`));
   if (problems.length > 0) {
     print(problems);
     return 1;
