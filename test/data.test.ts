@@ -31,10 +31,10 @@ describe("CSV records", () => {
 
 describe("data", () => {
   test("loads invented models, used columns, rows and oldest date", () => {
-    const data = loadData(fixtureModels, ["score", "cost"]);
-    expect(data.columns).toEqual(["model", "vendor", "effort", "date", "score", "cost"]);
+    const data = loadData(fixtureModels, ["quality", "price"]);
+    expect(data.columns).toEqual(["model", "vendor", "effort", "date", "quality", "price"]);
     expect(data.rows).toHaveLength(8);
-    expect(data.rows[0]).toMatchObject({ model: "Acme Big", vendor: "acme", effort: "high", values: { score: 60, cost: 5 }, line: 2 });
+    expect(data.rows[0]).toMatchObject({ model: "Acme Big", vendor: "acme", effort: "high", values: { quality: 60, price: 5 }, line: 2 });
     expect(data.snapshot).toBe("2000-01-01");
     expect(normalizeId(" ACME.Big ")).toBe("acme-big");
   });

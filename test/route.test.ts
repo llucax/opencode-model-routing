@@ -4,6 +4,7 @@ import { computeQuota, unknownQuota, type WindowState } from "../src/quota.ts";
 import { buildRequest, describeJobs, parseRange, splitList, UsageError } from "../src/request.ts";
 import { resolveNotModel, route, type Route, type RouteInputs } from "../src/route.ts";
 import { matchModels } from "../src/catalog.ts";
+import { compile } from "../src/expr.ts";
 import { configOnly, editedConfig, fixtureCatalog, fixtureConfigText, fixtureData, fixtureText, routeFixture, routing } from "./helpers.ts";
 
 const names = (routes: Route[]) => routes.map((r) => `${r.provider}/${r.modelId} ${r.effort}`);
@@ -62,7 +63,7 @@ describe("candidate selection and ranking", () => {
   test("route carries the data, aliases, tags, derived bounds and notes", () => {
     const result = routeFixture({ tags: ["review", "docs"] });
     const selected = result.routes.find((r) => r.provider === "github-copilot" && r.modelId === "acme-big.1" && r.effort === "low")!;
-    expect(selected).toMatchObject({ model: "Acme Big", vendor: "acme", values: { score: 40, cost: 1 },
+    expect(selected).toMatchObject({ model: "Acme Big", vendor: "acme", values: { quality: 40, price: 1 },
       score: 40, cost: 1, bounded: true, heavy: false, maxHeavy: 1, matchedTags: ["review"], missingTags: ["docs"] });
     expect(selected.notes).toEqual(["bounded work only", "missing tags: docs"]);
   });
@@ -157,6 +158,24 @@ describe("filters and fallback", () => {
     expect(result.removed.exhausted).toBe(2);
     expect(result.routes.some((r) => r.model === "Acme Small")).toBe(true);
   });
+  test("where filters after the other filters, in range and above it, and keeps its failures in the nearest pool", () => {
+    const where = (text: string) => compile(text, "truth");
+    const filtered = routeFixture({ score: "40-47", where: where("price < 1.5") });
+    expect(new Set(filtered.routes.map((r) => r.cost))).toEqual(new Set([1, 0.9]));
+    expect(filtered.removed).toMatchObject({ where: 6, belowRange: 3, aboveRange: 0 });
+    // Above the range: one route passes where and is offered; the rest fail it.
+    const above = routeFixture({ score: "0-20", where: where("quality == 47") });
+    expect(names(above.aboveRange).sort()).toEqual(["github-copilot/zed-pro high", "openai/zed-pro high"]);
+    expect(above.removed.where).toBe(11);
+    // Nothing passes: the nearest say so, with their other reasons.
+    const none = routeFixture({ score: "0-20", where: where("price > 100") });
+    expect(none.aboveRange).toEqual([]);
+    expect(none.removed.where).toBe(13);
+    expect(none.nearest).toHaveLength(3);
+    expect(none.nearest[0]!.why).toMatch(/^fails where, above range by \d+/);
+    const job = routing(fixtureText, editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nwhere = "price < 1.5"'));
+    expect(routeFixture({ job: "implement" }, { routing: job }).removed.where).toBe(6);
+  });
   test("ambiguous catalog IDs fail routing rather than guess", () => {
     const catalog = { source: "test", providers: structuredClone(fixtureCatalog.providers) };
     catalog.providers.openai!["zed.pro"] = { efforts: ["high"], vision: false };
@@ -165,8 +184,37 @@ describe("filters and fallback", () => {
   });
 });
 
+describe("value ranking", () => {
+  const value = (text: string) => compile(text, "number");
+  test("with value = -cost the order is v1's: cost ascending, then score descending", () => {
+    expect(names(routeFixture().routes)).toEqual(names(routeFixture({ value: value("-price") }).routes));
+  });
+  test("a higher value ranks first, after provider standing and tags, ahead of cost", () => {
+    const routes = routeFixture({ value: value("quality") }).routes;
+    expect(routes.map((r) => r.value)).toEqual([...routes.map((r) => r.value)].sort((a, b) => b - a));
+    expect(names(routes)[0]).toMatch(/acme-big(\.1)? high$/);
+    const tagged = routeFixture({ value: value("quality"), tags: ["fast"] }).routes;
+    expect(tagged[0]!.model).toBe("Zed Lite");
+    const selected = routing(fixtureText, fixtureConfigText, [{ key: "--value", expr: value("quality") }]);
+    const standing = route(req({ value: value("quality") }, selected), withWindows({ anthropic: [window(5)], openai: [window(5)], "github-copilot": [window(5)] }, selected));
+    expect(standing.routes[0]!.provider).toBe("openai");
+    expect(standing.routes[0]!.cheap).toBe(true);
+  });
+  test("ties in value fall back to cost, then score, then the name", () => {
+    const routes = routeFixture({ value: value("1") }).routes;
+    expect(names(routes)).toEqual(names(routeFixture().routes));
+  });
+  test("a job's value formula replaces formulas.value; an explicit one replaces the job's", () => {
+    const job = routing(fixtureText, editedConfig('about = "Implement a defined task"', 'about = "Implement a defined task"\nvalue = "quality"'));
+    expect(req({ job: "implement" }, job).value.text).toBe("quality");
+    expect(req({ job: "implement", value: value("-price") }, job).value.text).toBe("-price");
+    expect(req({}, job).value.text).toBe("-cost");
+    expect(routeFixture({ job: "implement" }, { routing: job }).routes[0]!.value).toBe(47);
+  });
+});
+
 describe("provider standing", () => {
-  const ranked = (windows: Record<string, WindowState[]>, text = fixtureText, configText = editedConfig("cheap_cost = 0.15", "cheap_cost = 0")) => {
+  const ranked = (windows: Record<string, WindowState[]>, text = fixtureText, configText = editedConfig('cheap = "cost <= 0.15"', 'cheap = "cost <= 0"')) => {
     const selected = routing(text, configText);
     return route(req({}, selected), withWindows(windows, selected)).routes;
   };
@@ -191,7 +239,7 @@ describe("provider standing", () => {
   });
   test("unlisted providers stand behind listed providers", () => {
     const text = editedConfig('prefer = ["anthropic", "openai", "github-copilot"]', 'prefer = ["openai"]')
-      .replace("cheap_cost = 0.15", "cheap_cost = 0");
+      .replace('cheap = "cost <= 0.15"', 'cheap = "cost <= 0"');
     const providers = ranked({ anthropic: [window(5)], openai: [window(5)], "github-copilot": [window(5)] }, fixtureText, text).map((r) => r.provider);
     expect(providers.slice(0, 3)).toEqual(["openai", "openai", "openai"]);
     expect(providers.slice(3)).not.toContain("openai");
@@ -218,7 +266,7 @@ describe("cheap ranking", () => {
     expect(names(route(req({ tags: ["fast"] }), withWindows(rich)).routes)[0]).toBe("openai/zed-lite medium");
   });
   test("cheap-cost boundary is inclusive", () => {
-    const selected = routing(fixtureText, editedConfig("cheap_cost = 0.15", "cheap_cost = 0.2"));
+    const selected = routing(fixtureText, editedConfig('cheap = "cost <= 0.15"', 'cheap = "cost <= 0.2"'));
     expect(names(route(req({}, selected), withWindows(rich, selected)).routes).slice(0, 3)).toEqual([
       "anthropic/acme-small low", "openai/zed-lite medium", "github-copilot/zed-lite medium",
     ]);
@@ -229,7 +277,7 @@ describe("cheap ranking", () => {
     expect(names(result.routes)[0]).toBe("anthropic/acme-small low");
   });
   test("a broad cheap boundary groups routes first, ordered by provider then cost", () => {
-    const selected = routing(fixtureText, editedConfig("cheap_cost = 0.15", "cheap_cost = 1.0"));
+    const selected = routing(fixtureText, editedConfig('cheap = "cost <= 0.15"', 'cheap = "cost <= 1.0"'));
     const result = route(req({}, selected), withWindows(rich, selected)).routes;
     const cheap = result.filter((r) => r.cost <= 1).length;
     expect(result.slice(0, cheap).every((r) => r.cost <= 1)).toBe(true);
@@ -300,7 +348,7 @@ describe("routing detail", () => {
   });
   test("bounded-above cost adds a note without altering rank; equality is not bounded", () => {
     const base = names(routeFixture().routes);
-    const selected = routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 1\nbounded_above_cost = 1.5"));
+    const selected = routing(fixtureText, editedConfig("[providers.openai]\nmax_heavy = 1", "[providers.openai]\nmax_heavy = 1\nbounded = \"cost > 1.5\""));
     const routes = routeFixture({}, { routing: selected }).routes;
     expect(names(routes)).toEqual(base);
     expect(routes.filter((r) => r.provider === "openai" && r.bounded).map((r) => r.cost)).toEqual([2]);
@@ -311,9 +359,9 @@ describe("routing detail", () => {
     const base = routeFixture().routes;
     expect(base.filter((r) => r.heavy).map((r) => r.score)).toEqual([60, 60]);
     expect(base.find((r) => r.provider === "anthropic" && r.heavy)!.notes).toEqual(["heavy, at most 2 at a time on anthropic"]);
-    const edge = routing(fixtureText, editedConfig("heavy_score = 55", "heavy_score = 50"));
+    const edge = routing(fixtureText, editedConfig('heavy = "score >= 55"', 'heavy = "score >= 50"'));
     expect(new Set(routeFixture({}, { routing: edge }).routes.filter((r) => r.heavy).map((r) => r.score))).toEqual(new Set([50, 60]));
-    const off = routing(fixtureText, editedConfig("heavy_score = 55", "heavy_score = 1000"));
+    const off = routing(fixtureText, editedConfig('heavy = "score >= 55"', 'heavy = "score >= 1000"'));
     expect(names(routeFixture({}, { routing: off }).routes)).toEqual(names(base));
   });
   test("known running count is included in heavy notes; heavy limit makes nearest candidates", () => {

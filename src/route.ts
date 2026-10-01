@@ -5,6 +5,7 @@
 import { CatalogError, matchModels, offersEffort, type Catalog, type Match } from "./catalog.ts";
 import type { Exclusion, Routing } from "./config.ts";
 import { dataModels, normalizeId, type Effort } from "./data.ts";
+import { numberAt, truthAt } from "./formulas.ts";
 import { spareFor, type Quota } from "./quota.ts";
 import type { Request } from "./request.ts";
 
@@ -16,16 +17,20 @@ export interface Route {
   model: string;
   vendor: string;
   effort: Effort;
-  /** The value of `columns.score`. */
+  /** The `score` formula's value. */
   score: number;
-  /** The value of `columns.cost`. */
+  /** The `cost` formula's value. */
   cost: number;
+  /** The request's value formula's value: higher ranks first. */
+  value: number;
   /** Every used column's value. */
   values: Record<string, number>;
   /** The model's tags from the configuration. */
   modelTags: string[];
+  /** The policy's `cheap` holds; it ranks ahead only with enough spare and every requested tag. */
+  cheap: boolean;
   bounded: boolean;
-  /** Scores at least the policy's heavy_score. */
+  /** The policy's `heavy` holds. */
   heavy: boolean;
   /** How many heavy sessions may run at once on the provider. */
   maxHeavy: number;
@@ -56,6 +61,8 @@ export interface Removed {
   /** Heavy routes of a provider already running its max_heavy. */
   heavyLimit: number;
   exhausted: number;
+  /** Routes the request's `where` drops. */
+  where: number;
   belowRange: number;
   aboveRange: number;
 }
@@ -132,7 +139,7 @@ function compareKeys(a: readonly (number | string)[], b: readonly (number | stri
 
 /** The ascending sort key of a route. */
 function rankKey(route: Route, routing: Routing, avoidedVendors: Set<string> | undefined): (number | string)[] {
-  const { prefer, preferMinSpare, spareStep, cheapCost } = routing.config.policy;
+  const { prefer, preferMinSpare, spareStep } = routing.config.policy;
   let group: number;
   let position: number;
   let cheap = 0;
@@ -145,7 +152,7 @@ function rankKey(route: Route, routing: Routing, avoidedVendors: Set<string> | u
     position = index === -1 ? prefer.length : index;
     // Cheap only with every requested tag: cheapness must not beat a tag the
     // job asked for.
-    if (route.cost > cheapCost || route.missingTags.length > 0) cheap = 1;
+    if (!route.cheap || route.missingTags.length > 0) cheap = 1;
   } else {
     group = 1;
     position = -Math.floor(route.spare / spareStep);
@@ -156,6 +163,7 @@ function rankKey(route: Route, routing: Routing, avoidedVendors: Set<string> | u
     cheap,
     position,
     -route.matchedTags.length,
+    -route.value,
     route.cost,
     -route.score,
     routeName(route),
@@ -182,10 +190,11 @@ function notesFor(route: Route, aboveRange: boolean): string[] {
 }
 
 /** Why a route that passed the first filters is out of the result. */
-function whyOut(route: Route, request: Request): string {
+function whyOut(route: Route & { passesWhere: boolean }, request: Request): string {
   const reasons: string[] = [];
   if (atHeavyLimit(route)) reasons.push(`${route.running} of ${route.maxHeavy} heavy running on ${route.provider}`);
   if (route.blocked) reasons.push("exhausted");
+  if (!route.passesWhere) reasons.push("fails where");
   const away = Number(distance(route.score, request).toFixed(2));
   if (away < 0) reasons.push(`below range by ${-away}`);
   if (away > 0) reasons.push(`above range by ${away}`);
@@ -194,7 +203,7 @@ function whyOut(route: Route, request: Request): string {
 
 export function route(request: Request, inputs: RouteInputs): RouteResult {
   const { routing, catalog, quota, running } = inputs;
-  const { config, data } = routing;
+  const { config, data, results } = routing;
   const warnings: string[] = [];
   const removed: Removed = {
     noProvider: 0,
@@ -204,6 +213,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
     sameModel: 0,
     heavyLimit: 0,
     exhausted: 0,
+    where: 0,
     belowRange: 0,
     aboveRange: 0,
   };
@@ -227,7 +237,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
     request.notModels.length > 0 ? new Set([...avoided].map((key) => models.get(key)!.vendor)) : undefined;
 
   // Candidates: every row at every configured provider that has its model.
-  const all: (Route & { offered: boolean; vision: boolean; key: string })[] = [];
+  const all: (Route & { offered: boolean; vision: boolean; key: string; passesWhere: boolean })[] = [];
   for (const row of data.rows) {
     const key = normalizeId(row.model);
     const found = matches.byModel.get(key) ?? {};
@@ -237,14 +247,14 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
     }
     const entry = config.models[key];
     const modelTags = entry?.tags ?? [];
-    const score = row.values[config.columns.score]!;
-    const cost = row.values[config.columns.cost]!;
+    const score = numberAt(results, row, config.formulas.score!);
+    const cost = numberAt(results, row, config.formulas.cost!);
+    const value = numberAt(results, row, request.value);
+    const passesWhere = request.where === undefined || truthAt(results, row, request.where);
     for (const [provider, match] of Object.entries(found)) {
       const settings = config.providers[provider]!;
       const { spare, blocked } = spareFor(quota.providers[provider], row.model);
-      const bounded =
-        settings.boundedOnly.some((id) => normalizeId(id) === key) ||
-        (settings.boundedAboveCost !== undefined && cost > settings.boundedAboveCost);
+      const bounded = settings.boundedOnly.some((id) => normalizeId(id) === key) || truthAt(results, row, settings.bounded);
       all.push({
         provider,
         modelId: match.id,
@@ -253,10 +263,12 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
         effort: row.effort,
         score,
         cost,
+        value,
         values: row.values,
         modelTags,
+        cheap: truthAt(results, row, config.policy.cheap),
         bounded,
-        heavy: score >= config.policy.heavyScore,
+        heavy: truthAt(results, row, config.policy.heavy),
         maxHeavy: settings.maxHeavy,
         ...(running === undefined ? {} : { running: running[provider] ?? 0 }),
         ...(spare === undefined ? {} : { spare }),
@@ -267,6 +279,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
         offered: offersEffort(match.model, row.effort),
         vision: match.model.vision,
         key,
+        passesWhere,
       });
     }
   }
@@ -288,6 +301,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
 
   drop((c) => !atHeavyLimit(c), "heavyLimit");
   drop((c) => !c.blocked, "exhausted");
+  drop((c) => c.passesWhere, "where");
   const inRange: Route[] = [];
   const above: Route[] = [];
   for (const candidate of remaining) {
@@ -298,7 +312,7 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
   }
 
   const clean = (candidate: (typeof all)[number] | Route): Route => {
-    const { offered: _offered, vision: _vision, key: _key, ...rest } = candidate as (typeof all)[number];
+    const { offered: _offered, vision: _vision, key: _key, passesWhere: _passesWhere, ...rest } = candidate as (typeof all)[number];
     return rest;
   };
   const cut = <T>(routes: T[]): T[] => (request.limit > 0 ? routes.slice(0, request.limit) : routes);

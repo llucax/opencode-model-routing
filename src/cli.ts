@@ -7,8 +7,10 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CatalogError, defaultModelsJsonPath, loadModelsJson } from "./catalog.ts";
 import { checkConfigDir, checkRoutes } from "./check.ts";
-import { checkAgainstData, loadConfig, loadRouting, locateConfig, type Config, type Routing } from "./config.ts";
-import { dataModels, loadData, parseData, readDataText, type Data } from "./data.ts";
+import { buildRouting, loadConfig, loadRouting, locateConfig, type Routing } from "./config.ts";
+import { dataModels, parseData, readDataText, type Data } from "./data.ts";
+import { compile, ExprError, type ExprType } from "./expr.ts";
+import type { Located } from "./formulas.ts";
 import { formatConfig, formatText, jsonConfig, jsonReport } from "./format.ts";
 import { loadQuota } from "./quota.ts";
 import { buildRequest, NEEDS, splitList, UsageError } from "./request.ts";
@@ -34,6 +36,9 @@ Options:
                       other vendors; repeat or use commas
   --limit N           how many routes to print, 0 for all (default: 1 with --job
                       or --score, else all)
+  --value EXPR        rank by this formula, or a formula's name, instead of the
+                      job's or formulas.value
+  --where EXPR        only routes this predicate holds for, instead of the job's
   --json              print one JSON object instead of text
   --config FILE       configuration (default: $MODEL_ROUTING_CONFIG, else
                       \${XDG_CONFIG_HOME:-$HOME/.config}/opencode/model-routing/config.toml)
@@ -71,6 +76,8 @@ export interface Options {
   need?: string[];
   "not-model"?: string[];
   limit?: string;
+  value?: string;
+  where?: string;
   json?: boolean;
   data?: string;
   config?: string;
@@ -95,7 +102,18 @@ function parseLimit(text: string | undefined): number | undefined {
 }
 
 /** Options that only make sense when routing. */
-const ROUTING_ONLY = ["job", "score", "tags", "need", "not-model", "limit", "json", "quota-json", "now"] as const;
+const ROUTING_ONLY = ["job", "score", "tags", "need", "not-model", "limit", "value", "where", "json", "quota-json", "now"] as const;
+
+/** `--value` or `--where`, compiled; a problem is a usage error naming the option and the column. */
+function option(name: "value" | "where", text: string | undefined, type: ExprType): Located | undefined {
+  if (text === undefined) return undefined;
+  try {
+    return { key: `--${name}`, expr: compile(text, type) };
+  } catch (error) {
+    if (error instanceof ExprError) throw new UsageError(`--${name}: column ${error.column}: ${error.message}`);
+    throw error;
+  }
+}
 
 function reject(options: Options, names: readonly (keyof Options)[], command: string): void {
   for (const name of names) {
@@ -131,21 +149,16 @@ function runCheck(options: Options): number {
   }
   const file = locateConfig(options.config);
   const problems: string[] = [];
-  let config: Config | undefined;
-  let data: Data | undefined;
+  let routing: Routing;
   try {
-    config = loadConfig(file);
-    data = loadData(config.data, config.columns.use);
-    problems.push(...checkAgainstData(config, data, file.path));
+    const config = loadConfig(file);
+    routing = buildRouting(config, readDataText(config.data), file.path, config.data);
   } catch (error) {
     if (!(error instanceof ValidationError)) throw error;
-    problems.push(...error.messages);
-  }
-  if (config === undefined || data === undefined || problems.length > 0) {
-    print(problems);
+    print(error.messages);
     return 1;
   }
-  const routing: Routing = { config, data };
+  const { data } = routing;
 
   const catalog = loadModelsJson(options["models-json"] ?? defaultModelsJsonPath());
   problems.push(...checkRoutes(routing, catalog, file.path));
@@ -181,7 +194,10 @@ function runConfig(options: Options): number {
 /** The `route` command: prints the result and returns the exit status. */
 async function runRoute(options: Options): Promise<number> {
   const now = parseNow(options.now);
-  const routing = loadRouting(locateConfig(options.config), options.data);
+  // Compiled before loading, so the data's columns they use are read too.
+  const value = option("value", options.value, "number");
+  const where = option("where", options.where, "truth");
+  const routing = loadRouting(locateConfig(options.config), options.data, [value, where].filter((entry) => entry !== undefined));
   const request = buildRequest(
     {
       ...(options.job !== undefined ? { job: options.job } : {}),
@@ -190,6 +206,8 @@ async function runRoute(options: Options): Promise<number> {
       needs: splitList(options.need),
       notModels: splitList(options["not-model"]),
       ...(options.limit !== undefined ? { limit: parseLimit(options.limit)! } : {}),
+      ...(value ? { value: value.expr } : {}),
+      ...(where ? { where: where.expr } : {}),
     },
     routing.config,
     options.job !== undefined || options.score !== undefined ? 1 : 0,
@@ -223,6 +241,8 @@ export async function main(argv: string[]): Promise<number> {
         need: { type: "string", multiple: true },
         "not-model": { type: "string", multiple: true },
         limit: { type: "string" },
+        value: { type: "string" },
+        where: { type: "string" },
         json: { type: "boolean" },
         data: { type: "string" },
         config: { type: "string" },

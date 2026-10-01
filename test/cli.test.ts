@@ -29,7 +29,7 @@ describe("route CLI", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("any request: 13 routes");
-    expect(result.stdout).toMatch(/provider\/model\s+effort\s+score\s+cost\s+spare\s+tags\s+notes/);
+    expect(result.stdout).toMatch(/provider\/model\s+effort\s+value\s+quality\s+price\s+spare\s+tags\s+notes/);
     expect(result.stdout).toContain("anthropic/acme-big");
   });
   test("--job and --score default to limit 1, explicit --limit 0 returns all", () => {
@@ -47,9 +47,33 @@ describe("route CLI", () => {
     const result = run([...fixed, "--job", "implement", "--limit", "2", "--json"]);
     expect(result.status).toBe(0);
     const json = JSON.parse(result.stdout);
-    expect(json).toMatchObject({ version: 2, columns: { use: ["score", "cost"] },
-      request: { job: "implement", min: 40, max: 47, tags: ["code"], limit: 2 }, found: { routes: 6 } });
+    expect(json).toMatchObject({ version: 3, formulas: { value: "-cost" },
+      request: { job: "implement", min: 40, max: 47, tags: ["code"], limit: 2, value: "-cost", where: null }, found: { routes: 6 } });
     expect(json.routes).toHaveLength(2);
+  });
+  test("--value and --where replace the job's or the default, and their columns are read", () => {
+    const data = fixtureText.split("\n").map((line, i) => (line === "" ? line : i === 0 ? `${line},speed` : `${line},${10 - i}`)).join("\n");
+    const file = join(writeFiles(tempDir(), { "config.toml": fixtureConfigText, "models.csv": data }), "config.toml");
+    const args = [...withConfig(file), "--json", "--limit", "0"];
+    const plain = JSON.parse(run(args).stdout);
+    expect(plain.shown.columns).toEqual(["quality", "price"]);
+    const fast = JSON.parse(run([...args, "--value", "speed", "--where", "speed >= 5 and quality > 30"]).stdout);
+    expect(fast.request).toMatchObject({ value: "speed", where: "speed >= 5 and quality > 30" });
+    expect(fast.shown.columns).toEqual(["quality", "price", "speed"]);
+    expect(fast.removed.where).toBe(6);
+    expect(fast.routes).toHaveLength(7);
+    expect(fast.routes[0]).toMatchObject({ value: 9, shown: { quality: 60, price: 5, speed: 9 } });
+    const text = run([...withConfig(file), "--value", "speed", "--where", "speed >= 5"]);
+    expect(text.stdout).toMatch(/provider\/model\s+effort\s+value\s+quality\s+price\s+speed\s+spare/);
+    expect(text.stdout).toContain("value speed, where speed >= 5: 8 routes; removed 5 failing where");
+    expect(text.stdout).toContain("failing where");
+  });
+  test("--value and --where errors name the option and the column", () => {
+    expect(run([...fixed, "--value", "price < 1"])).toMatchObject({ status: 1, stderr: "model-route: --value: column 7: a formula must give a number, this is a comparison\n" });
+    expect(run([...fixed, "--where", "price"])).toMatchObject({ status: 1, stderr: "model-route: --where: column 1: a predicate must be a comparison or a combination of them, this is a number\n" });
+    expect(run([...fixed, "--where", "pric < 1"])).toMatchObject({ status: 1, stderr: 'model-route: --where: column 1: unknown name "pric", neither a data column nor a formula\n' });
+    expect(run([...fixed, "--value", "1 / (price - 1)"]).stderr).toContain(": --value: column 3: \"/\" gives Infinity");
+    expect(run(["check", "--config", fixtureConfig, "--where", "price < 1"]).stderr).toBe("model-route: --where does not apply to check; see --help\n");
   });
   test("explicit tags replace job's even when empty", () => {
     const result = run([...fixed, "--job", "implement", "--tags", "", "--json"]);
@@ -89,7 +113,7 @@ describe("route CLI", () => {
     expect(text.stdout).toContain(`data    ${fixtureModels} (8 rows, snapshot 2000-01-01)`);
     expect(text.stdout).toContain("implement");
     const json = run(["config", "--json", "--config", fixtureConfig]);
-    expect(JSON.parse(json.stdout)).toMatchObject({ version: 2, data: { rows: 8 }, columns: { score: "score" } });
+    expect(JSON.parse(json.stdout)).toMatchObject({ version: 3, data: { rows: 8 }, formulas: { score: "quality" } });
   });
   test("--data overrides the CSV configured for route and config commands", () => {
     const alternate = writeFiles(tempDir(), { "alternate.csv": fixtureText.replace("Zed Lite,zed,medium,2000-01-03,35,0.1", "Zed Lite,zed,medium,2000-01-03,39,0.1") });
@@ -242,7 +266,7 @@ describe("check CLI", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain('unknown effort "invalid"');
-    expect(result.stdout).toContain('score "NaN" is not a finite number');
+    expect(result.stdout).toContain('quality "NaN" is not a finite number');
   });
   test("invalid config reference checked against data before catalog or config directory", () => {
     const file = privateConfig(editedConfig('bounded_only = ["Acme Big"]', 'bounded_only = ["Nobody"]'));
@@ -334,7 +358,7 @@ describe("CLI config lookup", () => {
   test("config command states file source and shows policy, providers, tags, jobs and aliases", () => {
     const result = run(["config", "--config", fixtureConfig]);
     expect(result.stdout).toStartWith(`config  ${fixtureConfig} (from --config)\n`);
-    for (const part of ["columns\n", "policy\n", "prefer_min_spare", "Acme Big Weekly", "jobs\n", "tags\n", "models\n", "github-copilot/acme-big.1"]) {
+    for (const part of ["formulas\n", "policy\n", "prefer_min_spare", "Acme Big Weekly", "jobs\n", "tags\n", "models\n", "github-copilot/acme-big.1"]) {
       expect(result.stdout).toContain(part);
     }
     expect(run(["config", "--config", fixtureConfig], { MODEL_ROUTING_CONFIG: "/nonexistent/config.toml" }).status).toBe(0);
@@ -343,8 +367,8 @@ describe("CLI config lookup", () => {
   test("config JSON includes source, policy, providers, tags, jobs, model aliases and exclusions", () => {
     const file = privateConfig(fixtureConfigText + '\n[[exclude]]\nmodel = "Vista"\nreason = "unused"\n');
     const json = JSON.parse(run(["config", "--config", file, "--json"]).stdout);
-    expect(json).toMatchObject({ version: 2, config: { source: "--config", path: file },
-      data: { rows: 8, snapshot: "2000-01-01" }, columns: { score: "score" },
+    expect(json).toMatchObject({ version: 3, config: { source: "--config", path: file },
+      data: { rows: 8, snapshot: "2000-01-01" }, columns: { include: [] }, formulas: { score: "quality", cost: "price", value: "-cost" },
       policy: { prefer: ["anthropic", "openai", "github-copilot"] },
       tags: { vision: "images." }, jobs: [{ name: "implement", score: "40-47" }],
       exclude: [{ model: "Vista", effort: null, reason: "unused" }],
@@ -403,7 +427,7 @@ describe("CLI errors and wrapper", () => {
     const rows = run([...fixed, "--data", join(bad, "rows.csv")]);
     expect(rows.status).toBe(1);
     expect(rows.stderr).toContain('unknown effort "invalid"');
-    expect(rows.stderr).toContain('score "NaN" is not a finite number');
+    expect(rows.stderr).toContain('quality "NaN" is not a finite number');
     expect(rows.stderr.split("\n").filter(Boolean)).toHaveLength(2);
   });
   test("help exits 0 with all commands, data-only validation and limit documented", () => {

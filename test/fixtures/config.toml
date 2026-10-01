@@ -1,17 +1,17 @@
 # Synthetic configuration for the invented values in models.csv.
 data = "models.csv"
 
-[columns]
-use = ["score", "cost"]
-score = "score"
-cost = "cost"
+[formulas]
+score = "quality"
+cost = "price"
+value = "-cost"
 
 [policy]
 prefer = ["anthropic", "openai", "github-copilot"]
 prefer_min_spare = -10
 spare_step = 10
-cheap_cost = 0.15
-heavy_score = 55
+cheap = "cost <= 0.15"
+heavy = "score >= 55"
 
 [providers.anthropic]
 max_heavy = 2

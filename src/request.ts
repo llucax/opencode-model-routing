@@ -1,6 +1,7 @@
 // Requests: what both frontends accept, checked against the configuration.
 
 import type { Config } from "./config.ts";
+import type { Expr } from "./expr.ts";
 
 /** A problem with the request or the environment: printed as one line, exit status 1. */
 export class UsageError extends Error {}
@@ -42,6 +43,10 @@ export interface Request {
   notModels: string[];
   /** How many routes to return, 0 for all. */
   limit: number;
+  /** The formula routes rank by: the job's, else `formulas.value`. */
+  value: Expr;
+  /** The filter routes must pass, if any: the job's. */
+  where?: Expr;
 }
 
 /** A request as a frontend gets it; `undefined` means not given. */
@@ -53,6 +58,10 @@ export interface RequestInput {
   needs?: string[];
   notModels?: string[];
   limit?: number;
+  /** Replaces the job's value formula, or `formulas.value`. */
+  value?: Expr;
+  /** Replaces the job's filter. */
+  where?: Expr;
 }
 
 function unknownTagMessage(tag: string, config: Config): string {
@@ -71,13 +80,15 @@ export function describeJobs(config: Config): string[] {
 }
 
 /**
- * The request the input describes. A job gives the range and tags; a score
- * or tags given with it replace the job's. `defaultLimit` applies when no
- * limit is given.
+ * The request the input describes. A job gives the range, tags, value
+ * formula and filter; a score, tags, value or filter given with it replace
+ * the job's. `defaultLimit` applies when no limit is given.
  */
 export function buildRequest(input: RequestInput, config: Config, defaultLimit: number): Request {
   let range: { min?: number; max?: number } = {};
   let tags: string[] = [];
+  let value = config.formulas.value!;
+  let where: Expr | undefined;
   if (input.job !== undefined) {
     const job = config.jobs[input.job];
     if (!job) {
@@ -86,7 +97,11 @@ export function buildRequest(input: RequestInput, config: Config, defaultLimit: 
     }
     range = job.max === undefined ? { min: job.min } : { min: job.min, max: job.max };
     tags = job.tags;
+    if (job.value) value = job.value;
+    where = job.where;
   }
+  if (input.value !== undefined) value = input.value;
+  if (input.where !== undefined) where = input.where;
   if (input.score !== undefined) range = parseRange(input.score);
   if (input.tags !== undefined) tags = input.tags;
   for (const tag of tags) {
@@ -105,5 +120,7 @@ export function buildRequest(input: RequestInput, config: Config, defaultLimit: 
     needs: [...new Set(needs)],
     notModels: input.notModels ?? [],
     limit,
+    value,
+    ...(where ? { where } : {}),
   };
 }

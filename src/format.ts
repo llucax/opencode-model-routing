@@ -2,6 +2,8 @@
 // short text the tool returns to agents.
 
 import { describeSource, type Config, type ConfigFile, type Provider, type Routing } from "./config.ts";
+import type { Expr } from "./expr.ts";
+import { shownColumns, type Shown } from "./formulas.ts";
 import type { ProviderQuota, Quota } from "./quota.ts";
 import type { Request } from "./request.ts";
 import type { Nearest, Removed, Route, RouteResult } from "./route.ts";
@@ -15,6 +17,7 @@ const REMOVED_LABELS: [keyof Removed, string][] = [
   ["sameModel", "same model"],
   ["heavyLimit", "heavy limit"],
   ["exhausted", "exhausted"],
+  ["where", "failing where"],
   ["belowRange", "below range"],
   ["aboveRange", "above range"],
 ];
@@ -52,13 +55,18 @@ function describeExcluded(result: RouteResult): string | undefined {
   return `excluded: ${result.excluded.map((e) => `${e.model}${e.effort ? ` ${e.effort}` : ""} (${e.reason})`).join(", ")}`;
 }
 
-/** The request in words, as in `job implement, score 600-720, tags impl`. */
-export function describeRequest(request: Request): string {
+/**
+ * The request in words, as in `job implement, score 600-720, tags impl`; with
+ * `config`, the value formula too when it isn't `formulas.value`.
+ */
+export function describeRequest(request: Request, config?: Config): string {
   const parts: string[] = [];
   if (request.job !== undefined) parts.push(`job ${request.job}`);
   if (request.min !== undefined && request.max !== undefined) parts.push(`score ${request.min}-${request.max}`);
   else if (request.min !== undefined) parts.push(`score ${request.min}+`);
   if (request.tags.length > 0) parts.push(`tags ${request.tags.join(",")}`);
+  if (config !== undefined && request.value !== config.formulas.value) parts.push(`value ${request.value.text}`);
+  if (request.where !== undefined) parts.push(`where ${request.where.text}`);
   if (request.needs.length > 0) parts.push(`need ${request.needs.join(",")}`);
   if (request.notModels.length > 0) parts.push(`not model ${request.notModels.join(",")}`);
   return parts.length > 0 ? parts.join(", ") : "any request";
@@ -128,22 +136,33 @@ function tableNotes(route: Route): string[] {
   });
 }
 
-/** The routes as a table: provider/model, effort, the used columns, spare, tags, notes. */
-export function formatRoutes(routes: (Route | Nearest)[], columns: string[]): string[] {
+/** The metrics a route shows, as name and value: the value, the shown columns, and score and cost when they aren't a bare column. */
+export function metrics(route: Route, shown: Shown): [string, number][] {
+  return [
+    ["value", route.value],
+    ...shown.columns.map((column): [string, number] => [column, route.values[column]!]),
+    ...(shown.score ? [["score", route.score] as [string, number]] : []),
+    ...(shown.cost ? [["cost", route.cost] as [string, number]] : []),
+  ];
+}
+
+/** The routes as a table: provider/model, effort, the metrics, spare, tags, notes. */
+export function formatRoutes(routes: (Route | Nearest)[], shown: Shown): string[] {
+  const names = metrics(routes[0]!, shown).map(([name]) => name);
   const rows = routes.map((route) => {
     const notes = tableNotes(route);
     const why = "why" in route ? route.why : undefined;
     return [
       `${route.provider}/${route.modelId}`,
       route.effort,
-      ...columns.map((column) => formatNumber(route.values[column]!)),
+      ...metrics(route, shown).map(([, value]) => formatNumber(value)),
       formatSpare(route.spare),
       route.modelTags.join(", "),
       (why ? [why, ...notes] : notes).join("; "),
     ];
   });
-  const numeric = columns.map((_, i) => i + 2);
-  return renderTable(["provider/model", "effort", ...columns, "spare", "tags", "notes"], rows, [...numeric, numeric.length + 2]);
+  const numeric = names.map((_, i) => i + 2);
+  return renderTable(["provider/model", "effort", ...names, "spare", "tags", "notes"], rows, [...numeric, numeric.length + 2]);
 }
 
 function countText(shown: number, found: number, noun: string): string {
@@ -153,19 +172,19 @@ function countText(shown: number, found: number, noun: string): string {
 
 /** The whole text output, without warnings. */
 export function formatText(result: RouteResult, request: Request, quota: Quota, routing: Routing): string {
-  const { config } = routing;
-  const columns = config.columns.use;
+  const { config, data } = routing;
+  const shown = shownColumns(request, config, data);
   const lines = [...formatQuota(quota, config), ""];
-  const description = describeRequest(request);
+  const description = describeRequest(request, config);
   const removed = describeRemoved(result.removed);
   const removedText = removed ? `; removed ${removed}` : "";
   const excludedText = describeExcluded(result);
   if (result.routes.length > 0) {
-    lines.push(...formatRoutes(result.routes, columns), "");
+    lines.push(...formatRoutes(result.routes, shown), "");
     lines.push(`${description}: ${countText(result.routes.length, result.found.routes, "route")}${removedText}`);
     if (excludedText) lines.push(excludedText);
   } else if (result.aboveRange.length > 0) {
-    lines.push(...formatRoutes(result.aboveRange, columns), "");
+    lines.push(...formatRoutes(result.aboveRange, shown), "");
     const above = countText(result.aboveRange.length, result.found.aboveRange, "route");
     lines.push(`${description}: none in range, ${above} above range${removedText}`);
     if (excludedText) lines.push(excludedText);
@@ -173,7 +192,7 @@ export function formatText(result: RouteResult, request: Request, quota: Quota, 
     lines.push(`No route matches ${description}`);
     if (removed) lines.push(`removed ${removed}`);
     if (excludedText) lines.push(excludedText);
-    if (result.nearest.length > 0) lines.push("", "Nearest:", ...formatRoutes(result.nearest, columns));
+    if (result.nearest.length > 0) lines.push("", "Nearest:", ...formatRoutes(result.nearest, shown));
   }
   return lines.join("\n") + "\n";
 }
@@ -189,11 +208,29 @@ function quotaSummary(quota: Quota, config: Config): string {
     .join(", ");
 }
 
-/** `anthropic/x high (intelligence 820, cost_per_task 22): heavy, 1 of 2 running on anthropic`. */
-function briefRoute(route: Route | Nearest, columns: string[]): string {
-  const values = columns.map((column) => `${column} ${formatNumber(route.values[column]!)}`).join(", ");
+/**
+ * What the TUI's collapsed preview of a tool's output holds in an 80-column
+ * terminal: three lines' worth of characters, at 74 each.
+ */
+export const PREVIEW_CHARS = 3 * (80 - 6);
+
+/**
+ * `anthropic/x high (value 12, intelligence 820, cost_per_task 22): heavy, 1 of 2 running on anthropic`.
+ * `compact` 1 keeps only the value, 2 drops the metrics.
+ */
+function briefRoute(route: Route | Nearest, shown: Shown, compact = 0): string {
+  const all = metrics(route, shown);
+  const kept = compact === 0 ? all : compact === 1 ? all.slice(0, 1) : [];
+  const values = kept.map(([name, value]) => `${name} ${formatNumber(value)}`).join(", ");
   const notes = "why" in route ? [route.why, ...route.notes] : route.notes;
-  return `${route.provider}/${route.modelId} ${route.effort} (${values})${notes.length > 0 ? `: ${notes.join("; ")}` : ""}`;
+  return `${route.provider}/${route.modelId} ${route.effort}${values ? ` (${values})` : ""}${notes.length > 0 ? `: ${notes.join("; ")}` : ""}`;
+}
+
+/** The least compaction that keeps the first route's line, notes included, inside the TUI's preview. */
+function compaction(route: Route | Nearest | undefined, shown: Shown, prefix = ""): number {
+  if (route === undefined) return 0;
+  for (const level of [0, 1]) if ((prefix + briefRoute(route, shown, level)).length <= PREVIEW_CHARS) return level;
+  return 2;
 }
 
 /**
@@ -201,12 +238,13 @@ function briefRoute(route: Route | Nearest, columns: string[]): string {
  * what the agent must keep in mind. On no route, why and what to do.
  */
 export function formatBrief(result: RouteResult, request: Request, quota: Quota, routing: Routing, notes: string[]): string {
-  const { config } = routing;
-  const columns = config.columns.use;
+  const { config, data } = routing;
+  const shown = shownColumns(request, config, data);
   const routes = result.routes.length > 0 ? result.routes : result.aboveRange;
   const lines: string[] = [];
   if (routes.length > 0) {
-    lines.push(...routes.map((route) => briefRoute(route, columns)));
+    const compact = compaction(routes[0], shown);
+    lines.push(...routes.map((route) => briefRoute(route, shown, compact)));
     lines.push(`quota: ${quotaSummary(quota, config)}`);
     const found = result.routes.length > 0 ? result.found.routes : result.found.aboveRange;
     if (routes.length < found) lines.push(`${found - routes.length} more routes; pass limit to see them.`);
@@ -214,20 +252,31 @@ export function formatBrief(result: RouteResult, request: Request, quota: Quota,
     if (routes.some((route) => route.bounded)) lines.push("Bounded work only: one bounded job, never a loop or long session.");
   } else {
     const removed = describeRemoved(result.removed);
-    lines.push(`No route matches ${describeRequest(request)}${removed ? `; removed ${removed}` : ""}.`);
+    lines.push(`No route matches ${describeRequest(request, config)}${removed ? `; removed ${removed}` : ""}.`);
     lines.push(`quota: ${quotaSummary(quota, config)}`);
     const excluded = describeExcluded(result);
     if (excluded) lines.push(excluded);
-    if (result.nearest.length > 0) lines.push("Nearest, not usable:", ...result.nearest.map((route) => `  ${briefRoute(route, columns)}`));
+    if (result.nearest.length > 0) {
+      const compact = compaction(result.nearest[0], shown, "  ");
+      lines.push("Nearest, not usable:", ...result.nearest.map((route) => `  ${briefRoute(route, shown, compact)}`));
+    }
     lines.push(NO_WORKAROUND);
   }
   lines.push(...notes);
   return lines.join("\n");
 }
 
-function jsonRoute(route: Route | Nearest): Record<string, unknown> {
-  return { ...route, spare: route.spare ?? null, running: route.running ?? null };
+function jsonRoute(route: Route | Nearest, shown: Shown): Record<string, unknown> {
+  const values = Object.fromEntries(shown.columns.map((column) => [column, route.values[column]!]));
+  return { ...route, shown: values, spare: route.spare ?? null, running: route.running ?? null };
 }
+
+/** Each formula's text, by name. */
+function formulaTexts(config: Config): Record<string, string> {
+  return Object.fromEntries(Object.entries(config.formulas).map(([name, expr]) => [name, expr.text]));
+}
+
+const exprText = (expr: Expr | undefined): string | null => expr?.text ?? null;
 
 /** The JSON object printed by `--json`. */
 export function jsonReport(
@@ -238,10 +287,13 @@ export function jsonReport(
   warnings: string[],
 ): Record<string, unknown> {
   const { config, data } = routing;
+  const shown = shownColumns(request, config, data);
   return {
-    version: 2,
+    version: 3,
     snapshot: data.snapshot ?? null,
     columns: config.columns,
+    formulas: formulaTexts(config),
+    shown,
     request: {
       job: request.job ?? null,
       min: request.min ?? null,
@@ -250,6 +302,9 @@ export function jsonReport(
       needs: request.needs,
       notModels: request.notModels,
       limit: request.limit,
+      score: config.formulas.score!.text,
+      value: request.value.text,
+      where: exprText(request.where),
     },
     warnings,
     quota: Object.keys(config.providers).map((name) => {
@@ -266,12 +321,12 @@ export function jsonReport(
         windows: state.windows,
       };
     }),
-    routes: result.routes.map(jsonRoute),
-    aboveRange: result.aboveRange.map(jsonRoute),
+    routes: result.routes.map((route) => jsonRoute(route, shown)),
+    aboveRange: result.aboveRange.map((route) => jsonRoute(route, shown)),
     found: result.found,
     removed: result.removed,
     excluded: result.excluded,
-    nearest: result.nearest.map(jsonRoute),
+    nearest: result.nearest.map((route) => jsonRoute(route, shown)),
   };
 }
 
@@ -296,7 +351,7 @@ function providerLines(provider: Provider): string[] {
   const pairs: [string, string[]][] = [["max_heavy", [String(provider.maxHeavy)]]];
   if (provider.quotaName !== undefined) pairs.push(["quota_name", [provider.quotaName]]);
   if (provider.boundedOnly.length > 0) pairs.push(["bounded_only", [provider.boundedOnly.join(", ")]]);
-  if (provider.boundedAboveCost !== undefined) pairs.push(["bounded_above_cost", [String(provider.boundedAboveCost)]]);
+  if (provider.bounded !== undefined) pairs.push(["bounded", [provider.bounded.text]]);
   if (provider.windowOverrides.length > 0) pairs.push(["window_overrides", provider.windowOverrides.map(describeWindow)]);
   return [provider.plan === undefined ? provider.name : `${provider.name} (${provider.plan})`, ...keyValueLines(pairs)];
 }
@@ -309,26 +364,31 @@ export function formatConfig(sources: ConfigSources, routing: Routing): string {
     `config  ${sources.config.path} (${describeSource(sources.config.source)})`,
     `data    ${config.data} (${data.rows.length} rows${data.snapshot ? `, snapshot ${data.snapshot}` : ""})`,
     "",
-    "columns",
-    ...keyValueLines([
-      ["use", [columns.use.join(", ")]],
-      ["score", [columns.score]],
-      ["cost", [columns.cost]],
-    ]),
+    ...(columns.include.length > 0 ? ["columns", ...keyValueLines([["include", [columns.include.join(", ")]]]), ""] : []),
+    "formulas",
+    ...keyValueLines(Object.entries(config.formulas).map(([name, expr]) => [name, [expr.text]])),
     "",
     "policy",
     ...keyValueLines([
       ["prefer", [policy.prefer.join(", ")]],
       ["prefer_min_spare", [String(policy.preferMinSpare)]],
       ["spare_step", [String(policy.spareStep)]],
-      ["cheap_cost", [String(policy.cheapCost)]],
-      ["heavy_score", [String(policy.heavyScore)]],
+      ...(policy.cheap ? [["cheap", [policy.cheap.text]] as [string, string[]]] : []),
+      ...(policy.heavy ? [["heavy", [policy.heavy.text]] as [string, string[]]] : []),
     ]),
   ];
   for (const provider of Object.values(config.providers)) lines.push("", ...providerLines(provider));
   const jobs = Object.values(config.jobs);
   if (jobs.length > 0) {
-    lines.push("", "jobs", ...keyValueLines(jobs.map((job) => [job.name, [`${job.score}${job.tags.length > 0 ? ` ${job.tags.join(",")}` : ""}: ${job.about}`]])));
+    const extras = (job: (typeof jobs)[number]): string[] => [
+      ...(job.value ? [`value ${job.value.text}`] : []),
+      ...(job.where ? [`where ${job.where.text}`] : []),
+    ];
+    lines.push(
+      "",
+      "jobs",
+      ...keyValueLines(jobs.map((job) => [job.name, [`${job.score}${job.tags.length > 0 ? ` ${job.tags.join(",")}` : ""}: ${job.about}`, ...extras(job)]])),
+    );
   }
   if (Object.keys(config.tags).length > 0) lines.push("", "tags", ...keyValueLines(Object.entries(config.tags).map(([tag, about]) => [tag, [about]])));
   const models = Object.values(config.models);
@@ -354,21 +414,29 @@ export function formatConfig(sources: ConfigSources, routing: Routing): string {
 export function jsonConfig(sources: ConfigSources, routing: Routing): Record<string, unknown> {
   const { config, data } = routing;
   return {
-    version: 2,
+    version: 3,
     config: { path: sources.config.path, source: sources.config.source },
     data: { path: config.data, rows: data.rows.length, snapshot: data.snapshot ?? null },
     columns: config.columns,
-    policy: config.policy,
+    formulas: formulaTexts(config),
+    policy: { ...config.policy, cheap: exprText(config.policy.cheap), heavy: exprText(config.policy.heavy) },
     providers: Object.values(config.providers).map((provider) => ({
       name: provider.name,
       plan: provider.plan ?? null,
       quotaName: provider.quotaName ?? null,
       maxHeavy: provider.maxHeavy,
       boundedOnly: provider.boundedOnly,
-      boundedAboveCost: provider.boundedAboveCost ?? null,
+      bounded: exprText(provider.bounded),
       windowOverrides: provider.windowOverrides.map((window) => ({ ...window, models: window.models ?? null })),
     })),
-    jobs: Object.values(config.jobs).map((job) => ({ name: job.name, score: job.score, tags: job.tags, about: job.about })),
+    jobs: Object.values(config.jobs).map((job) => ({
+      name: job.name,
+      score: job.score,
+      tags: job.tags,
+      about: job.about,
+      value: exprText(job.value),
+      where: exprText(job.where),
+    })),
     tags: config.tags,
     models: Object.values(config.models),
     exclude: config.exclude.map((entry) => ({ ...entry, effort: entry.effort ?? null })),
