@@ -114,6 +114,16 @@ describe("tool execution with fake dependencies", () => {
     expect(result.title).toBe("anthropic/acme-big high");
     expect(result.output).not.toContain("more routes; pass limit");
   });
+  test("a limit above 1 returns each provider's best route and says what it hid; limit 1 and 0 don't", async () => {
+    const result = await runTool({ job: "implement", limit: 3 }, deps());
+    expect(result.routes.map((r) => r.provider).sort()).toEqual(["anthropic", "github-copilot", "openai"]);
+    expect(result.output).toContain("3 more routes, 3 of them other routes of the same providers; pass limit 0 to see them.");
+    const two = await runTool({ job: "implement", limit: 2 }, deps());
+    expect(two.routes).toHaveLength(2);
+    expect(two.output).toContain("4 more routes, 3 of them other routes of the same providers; pass a larger limit, or 0 for every route.");
+    expect((await runTool({ job: "implement", limit: 0 }, deps())).routes).toHaveLength(6);
+    expect((await runTool({ job: "implement", limit: 1 }, deps())).output).toContain("5 more routes; pass limit to see them.");
+  });
   test("running heavy sessions at their limits remove the provider's heavy route", async () => {
     const running = [session("anthropic", "acme-big", "high"), session("anthropic", "acme-big", "high")];
     const result = await runTool({ score: "60+" }, deps(running));

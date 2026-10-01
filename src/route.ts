@@ -72,8 +72,12 @@ export interface RouteResult {
   routes: Route[];
   /** When nothing is in range, the routes above it, best first, cut to the limit. */
   aboveRange: Route[];
-  /** How many routes were found before the limit, in range and above it. */
-  found: { routes: number; aboveRange: number };
+  /**
+   * How many routes were found before the limit, in range and above it, and
+   * how many of them were left out only because another route of their
+   * provider ranks higher (see `Request.limit`).
+   */
+  found: { routes: number; aboveRange: number; sameProvider: number };
   removed: Removed;
   /** The exclusions that removed at least one route, with their reasons. */
   excluded: Exclusion[];
@@ -315,6 +319,15 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
     const { offered: _offered, vision: _vision, key: _key, passesWhere: _passesWhere, ...rest } = candidate as (typeof all)[number];
     return rest;
   };
+  // With a limit above 1, each provider's best route only: more routes of
+  // the same provider are rarely worth choosing between.
+  const bestPerProvider = request.limit > 1 && !request.everyRoute;
+  const shortlist = (ranked: Route[]): { routes: Route[]; sameProvider: number } => {
+    if (!bestPerProvider) return { routes: ranked, sameProvider: 0 };
+    const seen = new Set<string>();
+    const routes = ranked.filter((candidate) => !seen.has(candidate.provider) && seen.add(candidate.provider));
+    return { routes, sameProvider: ranked.length - routes.length };
+  };
   const cut = <T>(routes: T[]): T[] => (request.limit > 0 ? routes.slice(0, request.limit) : routes);
   const rank = (routes: Route[], aboveRange: boolean): Route[] =>
     routes
@@ -326,16 +339,24 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
   const result = { removed, excluded: hit, warnings };
   if (inRange.length > 0) {
     removed.aboveRange = above.length;
+    const best = shortlist(rank(inRange, false));
     return {
-      routes: cut(rank(inRange, false)),
+      routes: cut(best.routes),
       aboveRange: [],
-      found: { routes: inRange.length, aboveRange: 0 },
+      found: { routes: inRange.length, aboveRange: 0, sameProvider: best.sameProvider },
       nearest: [],
       ...result,
     };
   }
   if (above.length > 0) {
-    return { routes: [], aboveRange: cut(rank(above, true)), found: { routes: 0, aboveRange: above.length }, nearest: [], ...result };
+    const best = shortlist(rank(above, true));
+    return {
+      routes: [],
+      aboveRange: cut(best.routes),
+      found: { routes: 0, aboveRange: above.length, sameProvider: best.sameProvider },
+      nearest: [],
+      ...result,
+    };
   }
 
   const nearest = passed
@@ -349,5 +370,5 @@ export function route(request: Request, inputs: RouteInputs): RouteResult {
       notes: notesFor(candidate, false).filter((note) => !(atHeavyLimit(candidate) && note.startsWith("heavy, "))),
       why: whyOut(candidate, request),
     }));
-  return { routes: [], aboveRange: [], found: { routes: 0, aboveRange: 0 }, nearest, ...result };
+  return { routes: [], aboveRange: [], found: { routes: 0, aboveRange: 0, sameProvider: 0 }, nearest, ...result };
 }

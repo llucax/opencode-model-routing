@@ -35,7 +35,10 @@ Options:
   --not-model X       avoid a model, by its data ID or provider/ID, and prefer
                       other vendors; repeat or use commas
   --limit N           how many routes to print, 0 for all (default: 1 with --job
-                      or --score, else all)
+                      or --score, else all); above 1, only each provider's best
+                      route, unless --every-route
+  --every-route       with --limit above 1, print every route of a provider, not
+                      only its best
   --value EXPR        rank by this formula, or a formula's name, instead of the
                       job's or formulas.value
   --where EXPR        only routes this predicate holds for, instead of the job's
@@ -76,6 +79,7 @@ export interface Options {
   need?: string[];
   "not-model"?: string[];
   limit?: string;
+  "every-route"?: boolean;
   value?: string;
   where?: string;
   json?: boolean;
@@ -102,7 +106,7 @@ function parseLimit(text: string | undefined): number | undefined {
 }
 
 /** Options that only make sense when routing. */
-const ROUTING_ONLY = ["job", "score", "tags", "need", "not-model", "limit", "value", "where", "json", "quota-json", "now"] as const;
+const ROUTING_ONLY = ["job", "score", "tags", "need", "not-model", "limit", "every-route", "value", "where", "json", "quota-json", "now"] as const;
 
 /** `--value` or `--where`, compiled; a problem is a usage error naming the option and the column. */
 function option(name: "value" | "where", text: string | undefined, type: ExprType): Located | undefined {
@@ -206,6 +210,7 @@ async function runRoute(options: Options): Promise<number> {
       needs: splitList(options.need),
       notModels: splitList(options["not-model"]),
       ...(options.limit !== undefined ? { limit: parseLimit(options.limit)! } : {}),
+      ...(options["every-route"] ? { everyRoute: true } : {}),
       ...(value ? { value: value.expr } : {}),
       ...(where ? { where: where.expr } : {}),
     },
@@ -241,6 +246,7 @@ export async function main(argv: string[]): Promise<number> {
         need: { type: "string", multiple: true },
         "not-model": { type: "string", multiple: true },
         limit: { type: "string" },
+        "every-route": { type: "boolean" },
         value: { type: "string" },
         where: { type: "string" },
         json: { type: "boolean" },

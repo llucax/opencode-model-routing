@@ -51,7 +51,7 @@ describe("candidate selection and ranking", () => {
       "github-copilot/zed-pro xhigh", "openai/zed-pro xhigh", "anthropic/acme-big high",
       "github-copilot/acme-big.1 high",
     ]);
-    expect(result.found).toEqual({ routes: 13, aboveRange: 0 });
+    expect(result.found).toEqual({ routes: 13, aboveRange: 0, sameProvider: 0 });
     expect(Object.values(result.removed).every((count) => count === 0)).toBe(true);
   });
   test("ties are deterministic regardless of CSV order", () => {
@@ -89,11 +89,11 @@ describe("filters and fallback", () => {
   test("bounds are inclusive, below removed, above set aside if anything is in range", () => {
     const result = routeFixture({ score: "40-47" });
     expect(new Set(result.routes.map((r) => r.score))).toEqual(new Set([40, 45, 47]));
-    expect(result.found).toEqual({ routes: 6, aboveRange: 0 });
+    expect(result.found).toEqual({ routes: 6, aboveRange: 0, sameProvider: 0 });
     expect(result.removed).toMatchObject({ belowRange: 3, aboveRange: 4 });
   });
   test("above-range fallback and nearest after every route is below", () => {
-    const above = routeFixture({ score: "33-33", limit: 2 });
+    const above = routeFixture({ score: "33-33", limit: 2, everyRoute: true });
     expect(above.aboveRange).toHaveLength(2);
     expect(above.found.aboveRange).toBe(12);
     expect(above.aboveRange.every((r) => r.notes[0] === "above range")).toBe(true);
@@ -109,6 +109,47 @@ describe("filters and fallback", () => {
     expect(limited.routes).toEqual(full.routes.slice(0, 1));
     expect(limited.found).toEqual(full.found);
     expect(routeFixture({ score: "40-47", limit: 0 }).routes).toHaveLength(6);
+  });
+  test("a limit above 1 keeps only each provider's best route, a limit of 1 or 0 or every-route keep them all", () => {
+    const every = routeFixture({ score: "40-47", limit: 0 });
+    expect(names(every.routes)).toEqual([
+      "github-copilot/vista-1 medium", "anthropic/acme-small high", "anthropic/acme-big low",
+      "github-copilot/acme-big.1 low", "github-copilot/zed-pro high", "openai/zed-pro high",
+    ]);
+    const best = routeFixture({ score: "40-47", limit: 5 });
+    expect(names(best.routes)).toEqual(["github-copilot/vista-1 medium", "anthropic/acme-small high", "openai/zed-pro high"]);
+    // Counts stay before everything: what was found, and what only a better route of its provider hid.
+    expect(best.found).toEqual({ routes: 6, aboveRange: 0, sameProvider: 3 });
+    expect(best.routes.map((r) => r.provider)).toEqual(["github-copilot", "anthropic", "openai"]);
+    // The collapse comes before the limit: two providers' best routes, not the first two routes.
+    const two = routeFixture({ score: "40-47", limit: 2 });
+    expect(names(two.routes)).toEqual(names(best.routes).slice(0, 2));
+    expect(two.found).toEqual(best.found);
+    expect(routeFixture({ score: "40-47", limit: 5, everyRoute: true }).routes).toEqual(every.routes.slice(0, 5));
+    expect(routeFixture({ score: "40-47", limit: 5, everyRoute: true }).found.sameProvider).toBe(0);
+    const one = routeFixture({ score: "40-47", limit: 1 });
+    expect(one.routes).toEqual(every.routes.slice(0, 1));
+    expect(one.found.sameProvider).toBe(0);
+    expect(every.found.sameProvider).toBe(0);
+  });
+  test("the best route per provider is the first ranked one, not the cheapest, and a provider is a provider ID", () => {
+    // Anthropic's spare is high, so it ranks first, with its own best route first among its routes.
+    const inputs = withWindows({ anthropic: [window(50)], openai: [window(-30)], "github-copilot": [window(-60)] });
+    const best = route(req({ score: "40-47", limit: 3 }), inputs);
+    const all = route(req({ score: "40-47", limit: 0 }), inputs);
+    for (const kept of best.routes) expect(kept).toEqual(all.routes.find((r) => r.provider === kept.provider)!);
+    expect(best.routes.map((r) => r.provider)).toEqual(["anthropic", "openai", "github-copilot"]);
+    // The same model at two providers stays two routes.
+    expect(best.routes.filter((r) => r.model === "Zed Pro")).toHaveLength(1);
+    const same = route(req({ score: "47-47", limit: 3 }), inputs);
+    expect(names(same.routes)).toEqual(["openai/zed-pro high", "github-copilot/zed-pro high"]);
+  });
+  test("the above-range fallback keeps each provider's best route too", () => {
+    const best = routeFixture({ score: "33-33", limit: 4 });
+    expect(best.routes).toEqual([]);
+    expect(names(best.aboveRange)).toEqual(["github-copilot/zed-lite medium", "openai/zed-lite medium", "anthropic/acme-small high"]);
+    expect(best.found).toEqual({ routes: 0, aboveRange: 12, sameProvider: 9 });
+    expect(best.aboveRange.every((r) => r.notes[0] === "above range")).toBe(true);
   });
   test("tags are soft; capability filters by catalog vision", () => {
     const tags = routeFixture({ tags: ["review", "code"] });

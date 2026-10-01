@@ -100,7 +100,7 @@ export function checkText(file: string, text: string, routing: Routing, catalog:
       if (!(tag in config.tags)) problems.push(`${where}: unknown tag "${tag}" in the recommendation for --score ${rangeText}`);
     }
     if (!meetable.has(rangeText)) {
-      const request: Request = { ...range, tags: [], needs: [], notModels: [], limit: 1, value: config.formulas.value! };
+      const request: Request = { ...range, tags: [], needs: [], notModels: [], limit: 1, everyRoute: false, value: config.formulas.value! };
       meetable.set(rangeText, route(request, { routing, catalog, quota }).routes.length > 0);
     }
     if (!meetable.get(rangeText)) {
