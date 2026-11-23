@@ -89,7 +89,7 @@ heavy = "score >= 780"
 score = "780-880"
 value = "lean"
 where = "time_per_task < 900"
-about = "hard or ambiguous work, design, reviewing another model's output"
+about = "hard or ambiguous work, design, reviewing another model's output, spotting subtle behavior changes, medium-complexity multi-repo work"
 ```
 
 A formula gives a number and a predicate gives a truth value. Every place in the configuration takes one or the other, and giving the wrong one is an error: `value = "cost <= 0.5"` fails with "a formula must give a number, this is a comparison".

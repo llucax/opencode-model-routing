@@ -127,10 +127,20 @@ score = "600-720"
 tags = ["impl"]
 about = "well specified implementation or docs, bounded research"
 
+[jobs.moderate]
+score = "720-780"
+tags = ["impl"]
+about = "moderate or underspecified work, judgment within one repository, simple multi-repo work"
+
 [jobs.hard]
 score = "780-880"
 tags = ["design", "review"]
-about = "hard or ambiguous work, design, reviewing another model's output"
+about = "hard or ambiguous work, design, reviewing another model's output, spotting subtle behavior changes, medium-complexity multi-repo work"
+
+[jobs.top]
+score = "880+"
+tags = ["orch", "design"]
+about = "the hardest design and review, complex multi-repo interactions and orchestration"
 
 # Optional, per model (by its ID in the data): its tags, and in `ids` its
 # exact ID at a provider, which wins over matching. It's needed only when a
